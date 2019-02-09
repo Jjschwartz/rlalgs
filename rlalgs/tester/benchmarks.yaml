@@ -1,0 +1,22 @@
+envs:
+  CartPole-v1:
+    trials: 100
+    reward: 195.0
+  MountainCar-v0:
+    trials: 100
+    reward: -110.0
+  LunarLander-v2:
+    trials: 100
+    reward: 200.0
+  MountainCarContinuous-v0:
+    trials: 100
+    reward: 90.0
+  LunarLanderContinuous-v2:
+    trials: 100
+    reward: 200.0
+  CarRacing-v0:
+    trials: 100
+    reward: 900.0
+  FrozenLake8x8-v0:
+    trials: 100
+    reward: 1

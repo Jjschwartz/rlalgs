@@ -1,4 +1,8 @@
-# Test cases for algorithms
+# Algorithms Testing
+
+Algorithms are tested against known benchmarks.
+
+## Test cases for algorithms
 
 ### Continuous observation and discrete actions
 

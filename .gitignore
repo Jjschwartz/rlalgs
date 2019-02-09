@@ -1,0 +1,6 @@
+
+rlalgs\.egg-info/
+
+*.pyc
+
+rlalgs/data/
