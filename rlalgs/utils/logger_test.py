@@ -8,4 +8,4 @@ if __name__ == "__main__":
         logger.log_tabular("tInt", i)
         logger.log_tabular("tFloat", 1.0 * i)
         logger.dump_tabular()
-        input()
+        input("Press any key to do a thing...")

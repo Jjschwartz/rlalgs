@@ -3,7 +3,7 @@ import numpy as np
 from gym.spaces import Box, Discrete
 
 
-def get_dim_from_space(space):
+def get_dim_from_space(space, obs_space=False):
     if isinstance(space, Box):
         return space.shape[0]
     elif isinstance(space, Discrete):
@@ -11,10 +11,12 @@ def get_dim_from_space(space):
     raise NotImplementedError
 
 
-def placeholder_from_space(space):
+def placeholder_from_space(space, obs_space=False):
     if isinstance(space, Discrete):
-        return tf.placeholder(tf.int32, shape=(None,))
-        # return tf.placeholder(tf.float32, shape=combined_shape(None, space.n))
+        dim = get_dim_from_space(space, obs_space)
+        if obs_space:
+            return tf.placeholder(tf.float32, shape=combined_shape(None, dim))
+        return tf.placeholder(tf.int32, shape=(None, ))
     if isinstance(space, Box):
         return tf.placeholder(tf.float32, shape=combined_shape(None, space.shape))
 
@@ -27,6 +29,12 @@ def combined_shape(length, shape=None):
     else:
         # unpack shape tuple
         return (length, *shape)     # noqa: E999
+
+
+def process_obs(o, obs_space):
+    if isinstance(obs_space, Discrete):
+        return np.eye(obs_space.n)[o]
+    return o
 
 
 def mlp(x, hidden_sizes=[64], activation=tf.tanh, output_activation=None):

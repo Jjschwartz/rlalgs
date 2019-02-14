@@ -68,15 +68,17 @@ class Logger:
         Write all stored diagnostic-value pairs to output file and stdout, and clear buffer.
         """
         vals = []
-        print("\n----------\n")
+        max_header_len = max(10, len(max(self.headers)))
+        print("\n{}".format("-"*2*(max_header_len + 8)))
         for k in self.headers:
             v = self.log_current_row[k]
+            num_spaces = max_header_len - len(k)
             vstr = "%.3g" % v if isinstance(v, float) else str(v)
-            print("{} \t\t {}".format(k, vstr))
+            print("| {}{} \t\t {}".format(" " * num_spaces, k, vstr))
             vals.append(vstr)
         if self.first_row:
             self.output_file.write("\t".join(self.headers) + "\n")
         self.output_file.write("\t".join(vals) + "\n")
-        print("\n----------\n")
+        print("{}".format("-"*2*(max_header_len + 8)))
         self.log_current_row.clear()
         self.first_row = False

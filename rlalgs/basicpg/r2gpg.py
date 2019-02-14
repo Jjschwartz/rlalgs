@@ -9,6 +9,7 @@ import numpy as np
 import gym
 import tensorflow as tf
 import rlalgs.basicpg.core as core
+from rlalgs.utils.logger import Logger
 
 # Just disables the warning, doesn't enable AVX/FMA
 import os
@@ -89,6 +90,7 @@ def r2gpg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
     render : whether to render environment or not
     render_last : whether to render environment after final epoch
     """
+
     print("Setting seeds")
     tf.set_random_seed(seed)
     np.random.seed(seed)
@@ -96,26 +98,21 @@ def r2gpg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
     # instantiate environment
     print("Initializing environment")
     env = env_fn()
-    print(env.observation_space)
-    print(env.observation_space.shape)
-    # obs_dim = core.get_dim_from_space(env.observation_space)
-    obs_dim = 1
+    obs_dim = core.get_dim_from_space(env.observation_space, obs_space=True)
     act_dim = core.get_dim_from_space(env.action_space)
 
-    print(obs_dim)
-    print(act_dim)
+    print("Initializing logger")
+    logger = Logger(output_fname="r2gpg_" + env.spec._env_name + ".txt")
 
     # build policy network
     print("Building network")
-    # obs_ph = core.placeholder_from_space(env.observation_space)
-    obs_ph = tf.placeholder(tf.float32, shape=(None, obs_dim))
-    print(obs_ph.shape)
+    obs_ph = core.placeholder_from_space(env.observation_space, obs_space=True)
     act_ph = core.placeholder_from_space(env.action_space)
     actions, log_probs = core.actor_critic(obs_ph, act_ph, env.action_space,
                                            hidden_sizes=hidden_sizes)
 
     print("Building loss function")
-    return_ph = tf.placeholder(tf.float32, shape=(None, ))  # takes batch of trajectory return
+    return_ph = tf.placeholder(tf.float32, shape=(None, ))
     loss = -tf.reduce_mean(log_probs * return_ph)
 
     print("Setting up training op")
@@ -133,24 +130,35 @@ def r2gpg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
         o, r, d = env.reset(), 0, False
         finished_rendering_this_epoch = False
 
+        ep_len = 0
+        batch_ep_lens = []
+        ep_ret = 0
+        batch_ep_rets = []
+
         while True:
             # render first episode of each epoch
             if (not finished_rendering_this_epoch) and render:
                 env.render()
 
-            if np.isscalar(o):
-                o = np.array(o)
+            o = core.process_obs(o, env.observation_space)
+
             # select action for current obs
             a = sess.run(actions, {obs_ph: o.reshape(1, -1)})[0]
             # store step
             buf.store(o, a, r)
             # take action
             o, r, d, _ = env.step(a)
+            ep_len += 1
+            ep_ret += r
             # end of episode
             if d:
                 buf.finish_path()
                 o, r, d = env.reset(), 0, False
                 finished_rendering_this_epoch = True
+                batch_ep_lens.append(ep_len)
+                ep_len = 0
+                batch_ep_rets.append(ep_ret)
+                ep_ret = 0
                 # finish epoch
                 if buf.size() > batch_size:
                     break
@@ -164,13 +172,16 @@ def r2gpg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
                                     act_ph: np.array(batch_acts),
                                     return_ph: np.array(batch_rets)
                                  })
-        return batch_loss, batch_rets
+        return batch_loss, batch_ep_rets, batch_ep_lens
 
     # training loop
     for i in range(epochs):
-        batch_loss, batch_rets = train_one_epoch()
-        print("epoch: %3d \t loss: %.3f \t return: %.3f" %
-              (i, batch_loss, np.mean(batch_rets)))
+        batch_loss, batch_ep_rets, batch_ep_lens = train_one_epoch()
+        logger.log_tabular("epoch", i)
+        logger.log_tabular("loss", batch_loss)
+        logger.log_tabular("avg_return", np.mean(batch_ep_rets))
+        logger.log_tabular("avg_ep_lens", np.mean(batch_ep_lens))
+        logger.dump_tabular()
 
     if render_last:
         input("Press enter to view final policy in action")
@@ -195,8 +206,9 @@ if __name__ == "__main__":
     parser.add_argument("--renderlast", action="store_true")
     parser.add_argument("--lr", type=float, default=1e-2)
     parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
     print("\nSimple Reward-to-Go Policy Gradient")
     r2gpg(lambda: gym.make(args.env), epochs=args.epochs, lr=args.lr,
-          render=args.render, render_last=args.renderlast)
+          seed=args.seed, render=args.render, render_last=args.renderlast)
