@@ -36,7 +36,7 @@ def placeholder_from_space(space, obs_space=False, name=None):
         ph : the tf.placeholder for the space
     """
     if isinstance(space, Discrete):
-        dim = get_dim_from_space(space, obs_space)
+        dim = get_dim_from_space(space)
         if obs_space:
             return tf.placeholder(tf.float32, shape=combined_shape(None, dim), name=name)
         return tf.placeholder(tf.int32, shape=(None, ), name=name)

@@ -28,17 +28,23 @@ class VPGReplayBuffer:
     A buffer for VPG storing trajectories (o, a, r, v)
     """
 
-    def __init__(self):
+    def __init__(self, use_adv=True):
         """
         Init an empty buffer
+
+        Arguments:
+            use_adv : whether to use an advantage function or not (if not then
+                      naive reward-to-go is used)
         """
         self.obs_buf = []
         self.act_buf = []
         self.rew_buf = []
-        self.ret_buf = []
         self.val_buf = []
+        self.ret_buf = []
+        self.adv_buf = []
         self.ptr = 0
         self.path_start_idx = 0
+        self.use_adv = use_adv
 
     def store(self, o, a, r, v):
         """
@@ -55,10 +61,31 @@ class VPGReplayBuffer:
         Called when an episode is done.
         Constructs the advantage buffer for the episode
         """
+        if self.use_adv:
+            self.adv_path_finish()
+        else:
+            self.rtg_finish_path()
         path_slice = slice(self.path_start_idx, self.ptr)
         ep_rews = self.rew_buf[path_slice]
         ep_ret = reward_to_go(ep_rews)
         self.ret_buf.extend(ep_ret)
+        self.path_start_idx = self.ptr
+
+    def rtg_finish_path(self):
+        path_slice = slice(self.path_start_idx, self.ptr)
+        ep_rews = self.rew_buf[path_slice]
+        ep_ret = reward_to_go(ep_rews)
+        self.ret_buf.extend(ep_ret)
+        self.adv_buf.extend(ep_ret)
+        self.path_start_idx = self.ptr
+
+    def adv_path_finish(self):
+        path_slice = slice(self.path_start_idx, self.ptr)
+        ep_rews = self.rew_buf[path_slice]
+        ep_ret = reward_to_go(ep_rews)
+        ep_vals = np.array(self.val_buf[path_slice])
+        self.ret_buf.extend(ep_ret)
+        self.adv_buf.extend(ep_ret - ep_vals)
         self.path_start_idx = self.ptr
 
     def get(self):
@@ -70,8 +97,10 @@ class VPGReplayBuffer:
         acts = self.act_buf
         rets = self.ret_buf
         vals = self.val_buf
-        self.obs_buf, self.act_buf, self.rew_buf, self.ret_buf, self.val_buf = [], [], [], [], []
-        return obs, acts, rets, vals
+        adv = self.adv_buf
+        self.obs_buf, self.act_buf, self.rew_buf = [], [], []
+        self.ret_buf, self.val_buf, self.adv_buf = [], [], []
+        return obs, acts, adv, rets, vals
 
     def size(self):
         """
@@ -100,7 +129,7 @@ def vpg(env_fn, hidden_sizes=[64], lr=1e-2, epochs=50, batch_size=5000,
     np.random.seed(seed)
 
     env = env_fn()
-    # obs_dim = utils.get_dim_from_space(env.observation_space, obs_space=True)
+    # obs_dim = utils.get_dim_from_space(env.observation_space)
     # act_dim = utils.get_dim_from_space(env.action_space)
 
     logger = log.Logger(output_fname="vpg_" + env.spec.id + ".txt")
@@ -109,15 +138,16 @@ def vpg(env_fn, hidden_sizes=[64], lr=1e-2, epochs=50, batch_size=5000,
                                           name=log.OBS_NAME)
     act_ph = utils.placeholder_from_space(env.action_space)
     ret_ph = tf.placeholder(tf.float32, shape=(None, ))
+    adv_ph = tf.placeholder(tf.float32, shape=(None, ))
 
     pi, logp, v = mlp_actor_critic(obs_ph, act_ph, env.action_space, hidden_sizes=hidden_sizes)
-    pi_loss = -tf.reduce_mean(logp * ret_ph)
+    pi_loss = -tf.reduce_mean(logp * adv_ph)
     v_loss = tf.reduce_mean((ret_ph - v)**2)
 
     pi_train_op = tf.train.AdamOptimizer(learning_rate=lr).minimize(pi_loss)
     v_train_op = tf.train.AdamOptimizer(learning_rate=lr).minimize(v_loss)
 
-    buf = VPGReplayBuffer()
+    buf = VPGReplayBuffer(use_adv=True)
 
     sess = tf.Session()
     sess.run(tf.global_variables_initializer())
@@ -147,9 +177,10 @@ def vpg(env_fn, hidden_sizes=[64], lr=1e-2, epochs=50, batch_size=5000,
                 if buf.size() > batch_size:
                     break
 
-        batch_obs, batch_acts, batch_rets, batch_vals = buf.get()
+        batch_obs, batch_acts, batch_adv, batch_rets, batch_vals = buf.get()
         inputs = {obs_ph: np.array(batch_obs),
                   act_ph: np.array(batch_acts),
+                  adv_ph: np.array(batch_adv),
                   ret_ph: np.array(batch_rets),
                   }
         pi_l, v_l = sess.run([pi_loss, v_loss], feed_dict=inputs)
