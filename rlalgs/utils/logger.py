@@ -1,17 +1,60 @@
 """
-
 Logger class
 
-Logs to a tab-seperated values file
+Logs training progress to a tab-seperated values file
+Also provides functionality for saving and restoring a model
 
 Inspired heavily by OpenAI spinningup logger, which was in turn inspired by rllab's logging.
-
 """
 import os.path as osp
 import atexit
+import shutil
+import tensorflow as tf
+import pickle
 
 
 DEFAULT_DIR = osp.join(osp.abspath(osp.dirname(osp.dirname(__file__))), 'data')
+OBS_NAME = "x"
+ACTS_NAME = "pi"
+
+
+def save_model(sess, save_name, env, inputs, outputs):
+    output_dir = osp.join(DEFAULT_DIR, save_name + "/")
+    if osp.exists(output_dir):
+        shutil.rmtree(output_dir)
+    saver = tf.train.Saver()
+    saver.save(sess, output_dir + save_name)
+
+    info_file = open(osp.join(output_dir + "exp_info.pkl"), "wb")
+    info = {"env": env.spec.id,
+            "inputs": {k: v.name for k, v in inputs.items()},
+            "outputs": {k: v.name for k, v in outputs.items()}}
+    pickle.dump(info, info_file)
+    info_file.close()
+
+
+def restore_model(sess, save_name):
+    output_dir = osp.join(DEFAULT_DIR, save_name + "/")
+    saver = tf.train.import_meta_graph(output_dir + save_name + ".meta")
+    saver.restore(sess, output_dir + save_name)
+    graph = tf.get_default_graph()
+
+    info_file = open(osp.join(output_dir + "exp_info.pkl"), "rb")
+    info = pickle.load(info_file)
+    info_file.close()
+
+    model_vars = dict()
+    model_vars["inputs"] = {k: graph.get_tensor_by_name(v) for k, v in info["inputs"].items()}
+    model_vars["outputs"] = {k: graph.get_tensor_by_name(v) for k, v in info["outputs"].items()}
+    return model_vars
+
+
+def get_env_name(save_name):
+    output_dir = osp.join(DEFAULT_DIR, save_name + "/")
+    info_file = open(osp.join(output_dir + "exp_info.pkl"), "rb")
+    info = pickle.load(info_file)
+    info_file.close()
+    return info["env"]
 
 
 class Logger:

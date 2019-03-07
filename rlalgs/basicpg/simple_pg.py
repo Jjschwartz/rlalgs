@@ -14,61 +14,36 @@ import gym
 import tensorflow as tf
 import rlalgs.basicpg.core as core
 from rlalgs.utils.logger import Logger
+import rlalgs.utils.utils as utils
 
 # Just disables the warning, doesn't enable AVX/FMA
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 
-class ReplayBuffer:
+def simple_finish_path(ptr, path_start_idx, rew_buf):
     """
-    A buffer for storing trajectories (o, a, r)
+    Simple PG return calculator, called when an episode is done.
+    Simply sums all returns for a given episode and sets that as the
+    return for each step.
+
+    N.B. Doesn't reset the path_start_idx, this must be done outside of
+    function
+
+    Arguments:
+        ptr : index of the last entry in buffers + 1
+        path_start_idx : index of the start point of current episode in buffer
+        rew_buf : the reward buffer
+
+    Returns:
+        ret_buf : the return buffer for the episode
     """
-
-    def __init__(self, obs_dim, act_dim, buffer_size):
-        self.obs_buf = []
-        self.act_buf = []
-        self.rew_buf = []
-        self.ret_buf = []
-        self.ptr = 0
-        self.path_start_idx = 0
-
-    def store(self, o, a, r):
-        """
-        Store a step outcome (o, a, r) in the buffer
-        """
-        self.obs_buf.append(o)
-        self.act_buf.append(a)
-        self.rew_buf.append(r)
-        self.ptr += 1
-
-    def finish_path(self):
-        """
-        Called when an episode is done
-        """
-        path_slice = slice(self.path_start_idx, self.ptr)
-        ep_len = self.ptr - self.path_start_idx
-        ep_rews = self.rew_buf[path_slice]
-        ep_ret = np.sum(ep_rews)
-        self.ret_buf += [ep_ret] * ep_len
-        self.path_start_idx = self.ptr
-
-    def get(self):
-        """
-        Return the stored trajectories and empty the buffer
-        """
-        self.ptr, self.path_start_idx = 0, 0
-        obs = self.obs_buf
-        acts = self.act_buf
-        rets = self.ret_buf
-        self.obs_buf, self.act_buf, self.rew_buf, self.ret_buf = [], [], [], []
-        return obs, acts, rets
-
-    def size(self):
-        """
-        Return size of buffer
-        """
-        return self.ptr
+    path_slice = slice(path_start_idx, ptr)
+    ep_len = ptr - path_start_idx
+    ep_rews = rew_buf[path_slice]
+    ep_ret = np.sum(ep_rews)
+    ret_buf = [ep_ret] * ep_len
+    return ret_buf
 
 
 def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
@@ -94,15 +69,13 @@ def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
 
     print("Initializing environment")
     env = env_fn()
-    obs_dim = core.get_dim_from_space(env.observation_space, obs_space=True)
-    act_dim = core.get_dim_from_space(env.action_space)
 
     print("Initializing logger")
     logger = Logger(output_fname="simple_pg" + env.spec._env_name + ".txt")
 
     print("Building network")
-    obs_ph = core.placeholder_from_space(env.observation_space, obs_space=True)
-    act_ph = core.placeholder_from_space(env.action_space)
+    obs_ph = utils.placeholder_from_space(env.observation_space, obs_space=True)
+    act_ph = utils.placeholder_from_space(env.action_space)
     actions, log_probs = core.actor_critic(obs_ph, act_ph, env.action_space,
                                            hidden_sizes=hidden_sizes)
 
@@ -114,29 +87,24 @@ def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
     train_op = tf.train.AdamOptimizer(learning_rate=lr).minimize(loss)
 
     print("Initializing Replay Buffer")
-    buf = ReplayBuffer(obs_dim, act_dim, batch_size)
+    buf = core.SimpleBuffer(simple_finish_path)
 
     print("Launching tf session")
     sess = tf.Session()
     sess.run(tf.global_variables_initializer())
 
     def train_one_epoch():
-
         o, r, d = env.reset(), 0, False
         finished_rendering_this_epoch = False
-
-        ep_len = 0
-        batch_ep_lens = []
-        ep_ret = 0
-        batch_ep_rets = []
+        # for progress reporting
+        ep_len, ep_ret = 0, 0
+        batch_ep_lens, batch_ep_rets = [], []
 
         while True:
             # render first episode of each epoch
             if (not finished_rendering_this_epoch) and render:
                 env.render()
-
-            o = core.process_obs(o, env.observation_space)
-
+            o = utils.process_obs(o, env.observation_space)
             # select action for current obs
             a = sess.run(actions, {obs_ph: o.reshape(1, -1)})[0]
             # store step

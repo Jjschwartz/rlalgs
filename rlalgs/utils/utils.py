@@ -1,64 +1,88 @@
+"""
+Common general functions used by algorithm implementations
+"""
+from gym.spaces import Box, Discrete
 import tensorflow as tf
 import numpy as np
-from gym.spaces import Box, Discrete
-import rlalgs.utils.utils as utils
 
 
-class SimpleBuffer:
+def get_dim_from_space(space):
     """
-    A buffer for storing trajectories (o, a, r) for simple PG without a value function
+    Get the dimensions of a observation or action from a gym.space
+
+    Arguments:
+        space : the gym.space
+
+    Returns:
+        dim : the number of elements in a single entry if the space
     """
-    def __init__(self, finish_path_fn):
-        self.obs_buf = []
-        self.act_buf = []
-        self.rew_buf = []
-        self.ret_buf = []
-        self.finish_path_fn = finish_path_fn
-        self.ptr = 0
-        self.path_start_idx = 0
-
-    def store(self, o, a, r):
-        """
-        Store a step outcome (o, a, r) in the buffer
-        """
-        self.obs_buf.append(o)
-        self.act_buf.append(a)
-        self.rew_buf.append(r)
-        self.ptr += 1
-
-    def finish_path(self):
-        """
-        Called when an episode is done
-        """
-        ep_ret_buf = self.finish_path_fn(self.ptr, self.path_start_idx, self.rew_buf)
-        self.ret_buf.extend(ep_ret_buf)
-        self.path_start_idx = self.ptr
-
-    def get(self):
-        """
-        Return the stored trajectories and empty the buffer
-        """
-        self.ptr, self.path_start_idx = 0, 0
-        obs = self.obs_buf
-        acts = self.act_buf
-        rets = self.ret_buf
-        self.obs_buf, self.act_buf, self.rew_buf, self.ret_buf = [], [], [], []
-        return obs, acts, rets
-
-    def size(self):
-        """
-        Return size of buffer
-        """
-        return self.ptr
+    if isinstance(space, Box):
+        return space.shape[0]
+    elif isinstance(space, Discrete):
+        return space.n
+    raise NotImplementedError
 
 
-def mlp(x, hidden_sizes=[64], activation=tf.tanh, output_activation=None):
+def placeholder_from_space(space, obs_space=False, name=None):
+    """
+    Generate the correct tf.placeholder from a gym.space, with optional name
+
+    Arguments:
+        space : the gym.space
+        obs_space : whether the space if the observation space or not
+        name : name for the tf.placeholder (leave as None for no name)
+
+    Returns:
+        ph : the tf.placeholder for the space
+    """
+    if isinstance(space, Discrete):
+        dim = get_dim_from_space(space, obs_space)
+        if obs_space:
+            return tf.placeholder(tf.float32, shape=combined_shape(None, dim), name=name)
+        return tf.placeholder(tf.int32, shape=(None, ), name=name)
+    if isinstance(space, Box):
+        return tf.placeholder(tf.float32, shape=combined_shape(None, space.shape), name=name)
+
+
+def combined_shape(length, shape=None):
+    """
+    Combines a tensor length and a shape into a single shape tuple
+    """
+    if shape is None:
+        return (length,)   # accepts tensor of any shape
+    if np.isscalar(shape):
+        return (length, shape)
+    else:
+        # unpack shape tuple
+        return (length, *shape)     # noqa: E999
+
+
+def process_obs(o, obs_space):
+    """
+    Process an observation based on the observation space type
+    """
+    if isinstance(obs_space, Discrete):
+        return np.eye(obs_space.n)[o]
+    return o
+
+
+def mlp(x, output_size, hidden_sizes=[64], activation=tf.tanh, output_activation=None):
     """
     Creates a fully connected neural network
+
+    Arguments:
+        x : tf placeholder input to network
+        output_size : number of neurons in output layer
+        hidden_sizes : ordered list of size of each hidden layer
+        activation : tf activation function for hidden layers
+        output_activation : tf activation function for output layer or None if no activation
+
+    Returns:
+        y : output layer as tf tensor
     """
-    for size in hidden_sizes[:-1]:
+    for size in hidden_sizes:
         x = tf.layers.dense(x, size, activation=activation)
-    return tf.layers.dense(x, hidden_sizes[-1], activation=output_activation)
+    return tf.layers.dense(x, output_size, activation=output_activation)
 
 
 def mlp_categorical_policy(x, a, action_space, hidden_sizes=[64], activation=tf.tanh,
@@ -78,8 +102,8 @@ def mlp_categorical_policy(x, a, action_space, hidden_sizes=[64], activation=tf.
         actions : action selection tensor
         log_probs : log probabilities tensor of policy actions
     """
-    act_dim = utils.get_dim_from_space(action_space)
-    logits = utils.mlp(x, act_dim, hidden_sizes, activation, output_activation)
+    act_dim = get_dim_from_space(action_space)
+    logits = mlp(x, act_dim, hidden_sizes, activation, output_activation)
     # random action selection based off raw probabilities
     actions = tf.squeeze(tf.multinomial(logits, 1), axis=1, name="pi")
     action_mask = tf.one_hot(a, act_dim)
@@ -108,8 +132,8 @@ def mlp_gaussian_policy(x, a, action_space, hidden_sizes=[64], activation=tf.tan
         actions : action selection tensor
         log_probs : log probabilities tensor of policy actions
     """
-    act_dim = utils.get_dim_from_space(action_space)
-    mu = utils.mlp(x, act_dim, hidden_sizes, activation, output_activation)
+    act_dim = get_dim_from_space(action_space)
+    mu = mlp(x, act_dim, hidden_sizes, activation, output_activation)
     # setup log std tensor to constant value
     log_std = tf.get_variable(name="log_std", initializer=-0.5*np.ones(act_dim, dtype=np.float32))
     std = tf.exp(log_std)
@@ -133,15 +157,3 @@ def gaussian_likelihood(x, mu, log_std):
     std = tf.exp(log_std)
     pre_sum = tf.square((x - mu)/std) + 2*log_std + np.log(2*np.pi)
     return -0.5 * tf.reduce_sum(pre_sum, axis=1)
-
-
-def actor_critic(x, a, action_space, hidden_sizes=[32], activation=tf.tanh,
-                 output_activation=None):
-    """
-    """
-    if isinstance(action_space, Box):
-        policy = mlp_gaussian_policy
-    elif isinstance(action_space, Discrete):
-        policy = mlp_categorical_policy
-
-    return policy(x, a, action_space, hidden_sizes, activation, output_activation)

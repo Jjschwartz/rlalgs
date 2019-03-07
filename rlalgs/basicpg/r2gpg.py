@@ -10,6 +10,8 @@ import gym
 import tensorflow as tf
 import rlalgs.basicpg.core as core
 from rlalgs.utils.logger import Logger
+import rlalgs.utils.logger as log
+import rlalgs.utils.utils as utils
 
 # Just disables the warning, doesn't enable AVX/FMA
 import os
@@ -17,6 +19,9 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 
 def reward_to_go(rews):
+    """
+    Calculate the reward-to-go return for each step in a given episode
+    """
     n = len(rews)
     rtgs = np.zeros_like(rews)
     for i in reversed(range(n)):
@@ -24,54 +29,27 @@ def reward_to_go(rews):
     return rtgs
 
 
-class ReplayBuffer:
+def r2g_finish_path(ptr, path_start_idx, rew_buf):
     """
-    A buffer for storing trajectories (o, a, r)
+    Simple PG return calculator using reward-to-go return, called when an episode
+    is done. The return for a given step is the sum of all rewards following that
+    step in the given episode
+
+    N.B. Doesn't reset the path_start_idx, this must be done outside of
+    function
+
+    Arguments:
+        ptr : index of the last entry in buffers + 1
+        path_start_idx : index of the start point of current episode in buffer
+        rew_buf : the reward buffer
+
+    Returns:
+        ret_buf : the return buffer for the episode
     """
-
-    def __init__(self, obs_dim, act_dim, buffer_size):
-        self.obs_buf = []
-        self.act_buf = []
-        self.rew_buf = []
-        self.ret_buf = []
-        self.ptr = 0
-        self.path_start_idx = 0
-
-    def store(self, o, a, r):
-        """
-        Store a step outcome (o, a, r) in the buffer
-        """
-        self.obs_buf.append(o)
-        self.act_buf.append(a)
-        self.rew_buf.append(r)
-        self.ptr += 1
-
-    def finish_path(self):
-        """
-        Called when an episode is done
-        """
-        path_slice = slice(self.path_start_idx, self.ptr)
-        ep_rews = self.rew_buf[path_slice]
-        ep_ret = reward_to_go(ep_rews)
-        self.ret_buf.extend(ep_ret)
-        self.path_start_idx = self.ptr
-
-    def get(self):
-        """
-        Return the stored trajectories and empty the buffer
-        """
-        self.ptr, self.path_start_idx = 0, 0
-        obs = self.obs_buf
-        acts = self.act_buf
-        rets = self.ret_buf
-        self.obs_buf, self.act_buf, self.rew_buf, self.ret_buf = [], [], [], []
-        return obs, acts, rets
-
-    def size(self):
-        """
-        Return size of buffer
-        """
-        return self.ptr
+    path_slice = slice(path_start_idx, ptr)
+    ep_rews = rew_buf[path_slice]
+    ret_buf = reward_to_go(ep_rews)
+    return ret_buf
 
 
 def r2gpg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
@@ -90,24 +68,19 @@ def r2gpg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
     render : whether to render environment or not
     render_last : whether to render environment after final epoch
     """
-
     print("Setting seeds")
     tf.set_random_seed(seed)
     np.random.seed(seed)
 
-    # instantiate environment
     print("Initializing environment")
     env = env_fn()
-    obs_dim = core.get_dim_from_space(env.observation_space, obs_space=True)
-    act_dim = core.get_dim_from_space(env.action_space)
 
     print("Initializing logger")
-    logger = Logger(output_fname="r2gpg_" + env.spec._env_name + ".txt")
+    logger = Logger(output_fname="r2gpg_" + env.spec.id + ".txt")
 
-    # build policy network
     print("Building network")
-    obs_ph = core.placeholder_from_space(env.observation_space, obs_space=True)
-    act_ph = core.placeholder_from_space(env.action_space)
+    obs_ph = utils.placeholder_from_space(env.observation_space, obs_space=True, name=log.OBS_NAME)
+    act_ph = utils.placeholder_from_space(env.action_space)
     actions, log_probs = core.actor_critic(obs_ph, act_ph, env.action_space,
                                            hidden_sizes=hidden_sizes)
 
@@ -119,29 +92,24 @@ def r2gpg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
     train_op = tf.train.AdamOptimizer(learning_rate=lr).minimize(loss)
 
     print("Initializing Replay Buffer")
-    buf = ReplayBuffer(obs_dim, act_dim, batch_size)
+    buf = core.SimpleBuffer(r2g_finish_path)
 
     print("Launching tf session")
     sess = tf.Session()
     sess.run(tf.global_variables_initializer())
 
     def train_one_epoch():
-
         o, r, d = env.reset(), 0, False
         finished_rendering_this_epoch = False
-
-        ep_len = 0
-        batch_ep_lens = []
-        ep_ret = 0
-        batch_ep_rets = []
+        # for progress logging
+        ep_len, ep_ret = 0, 0
+        batch_ep_lens, batch_ep_rets = [], []
 
         while True:
             # render first episode of each epoch
-            if (not finished_rendering_this_epoch) and render:
+            if not finished_rendering_this_epoch and render:
                 env.render()
-
-            o = core.process_obs(o, env.observation_space)
-
+            o = utils.process_obs(o, env.observation_space)
             # select action for current obs
             a = sess.run(actions, {obs_ph: o.reshape(1, -1)})[0]
             # store step
@@ -156,9 +124,8 @@ def r2gpg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
                 o, r, d = env.reset(), 0, False
                 finished_rendering_this_epoch = True
                 batch_ep_lens.append(ep_len)
-                ep_len = 0
                 batch_ep_rets.append(ep_ret)
-                ep_ret = 0
+                ep_len, ep_ret = 0, 0
                 # finish epoch
                 if buf.size() > batch_size:
                     break
@@ -182,6 +149,9 @@ def r2gpg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
         logger.log_tabular("avg_return", np.mean(batch_ep_rets))
         logger.log_tabular("avg_ep_lens", np.mean(batch_ep_lens))
         logger.dump_tabular()
+
+    log.save_model(sess, "r2gpg_" + env.spec.id, env, {log.OBS_NAME: obs_ph},
+                   {log.ACTS_NAME: actions})
 
     if render_last:
         input("Press enter to view final policy in action")
@@ -210,5 +180,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     print("\nSimple Reward-to-Go Policy Gradient")
+    print("Training on the " + args.env + "environment\n")
     r2gpg(lambda: gym.make(args.env), epochs=args.epochs, lr=args.lr,
           seed=args.seed, render=args.render, render_last=args.renderlast)

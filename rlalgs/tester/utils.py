@@ -2,9 +2,11 @@
 Useful functions for running tests of algorithms
 """
 import yaml
+import os.path as osp
 
 
-BENCHMARK_FILE = "benchmarks.yaml"
+# BENCHMARK_FILE = "benchmarks.yaml"
+BENCHMARK_FILE = osp.join(osp.abspath(osp.dirname(__file__)), 'benchmarks.yaml')
 
 
 def load_benchmarks():
@@ -34,8 +36,8 @@ def get_benchmark(env_name):
         float avg_return : average return over all trials
     """
     benchmarks = load_benchmarks()
-    if env_name in benchmarks:
-        return benchmarks[env_name]["trials"], benchmarks[env_name]["reward"]
+    if env_name in benchmarks["envs"]:
+        return benchmarks["envs"][env_name]["trials"], benchmarks["envs"][env_name]["reward"]
     else:
         return None, None
 

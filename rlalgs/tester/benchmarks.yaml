@@ -1,5 +1,5 @@
 envs:
-  CartPole-v1:
+  CartPole-v0:
     trials: 100
     reward: 195.0
   MountainCar-v0:
