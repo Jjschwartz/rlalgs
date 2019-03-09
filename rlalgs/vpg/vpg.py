@@ -9,6 +9,7 @@ import tensorflow as tf
 import rlalgs.utils.utils as utils
 import rlalgs.utils.logger as log
 from rlalgs.vpg.core import mlp_actor_critic
+import rlalgs.vpg.core as core
 
 # Just disables the warning, doesn't enable AVX/FMA
 import os
@@ -28,7 +29,9 @@ class VPGReplayBuffer:
     A buffer for VPG storing trajectories (o, a, r, v)
     """
 
-    def __init__(self, use_adv=True):
+    valid_fns = ["simple", "adv", "gae"]
+
+    def __init__(self, gamma=0.99, lmbda=0.97, adv_fn="simple"):
         """
         Init an empty buffer
 
@@ -36,15 +39,17 @@ class VPGReplayBuffer:
             use_adv : whether to use an advantage function or not (if not then
                       naive reward-to-go is used)
         """
+        assert adv_fn in self.valid_fns
         self.obs_buf = []
         self.act_buf = []
         self.rew_buf = []
         self.val_buf = []
         self.ret_buf = []
         self.adv_buf = []
-        self.ptr = 0
-        self.path_start_idx = 0
-        self.use_adv = use_adv
+        self.ptr, self.path_start_idx = 0, 0
+        self.gamma = gamma
+        self.lmbda = lmbda
+        self.adv_fn = adv_fn
 
     def store(self, o, a, r, v):
         """
@@ -56,37 +61,54 @@ class VPGReplayBuffer:
         self.val_buf.append(v)
         self.ptr += 1
 
-    def finish_path(self):
+    def finish_path(self, last_val=0):
         """
         Called when an episode is done.
         Constructs the advantage buffer for the episode
         """
-        if self.use_adv:
+        if self.adv_fn == "simple":
+            self.rtg_finish_path()
+        elif self.adv_fn == "adv":
             self.adv_path_finish()
         else:
-            self.rtg_finish_path()
-        path_slice = slice(self.path_start_idx, self.ptr)
-        ep_rews = self.rew_buf[path_slice]
-        ep_ret = reward_to_go(ep_rews)
-        self.ret_buf.extend(ep_ret)
+            self.gae_path_finish(last_val)
         self.path_start_idx = self.ptr
 
     def rtg_finish_path(self):
+        """
+        reward to go with no value function baseline
+        """
         path_slice = slice(self.path_start_idx, self.ptr)
         ep_rews = self.rew_buf[path_slice]
         ep_ret = reward_to_go(ep_rews)
         self.ret_buf.extend(ep_ret)
         self.adv_buf.extend(ep_ret)
-        self.path_start_idx = self.ptr
 
     def adv_path_finish(self):
+        """
+        Simple advantage (Q(s, a) - V(s))
+        """
         path_slice = slice(self.path_start_idx, self.ptr)
         ep_rews = self.rew_buf[path_slice]
-        ep_ret = reward_to_go(ep_rews)
         ep_vals = np.array(self.val_buf[path_slice])
+        ep_ret = reward_to_go(ep_rews)
         self.ret_buf.extend(ep_ret)
         self.adv_buf.extend(ep_ret - ep_vals)
-        self.path_start_idx = self.ptr
+
+    def gae_path_finish(self, last_val=0):
+        """
+        General advantage estimate
+        """
+        path_slice = slice(self.path_start_idx, self.ptr)
+        ep_rews = np.append(np.array(self.rew_buf[path_slice]), last_val)
+        ep_vals = np.append(np.array(self.val_buf[path_slice]), last_val)
+        # calculate GAE
+        deltas = ep_rews[:-1] + self.gamma * ep_vals[1:] - ep_vals[:-1]
+        ep_adv = core.discount_cumsum(deltas, self.gamma * self.lmbda)
+        # calculate discounted reward to go for value function update
+        ep_ret = core.discount_cumsum(ep_rews, self.gamma)[:-1]
+        self.adv_buf.extend(ep_adv)
+        self.ret_buf.extend(ep_ret)
 
     def get(self):
         """
@@ -147,7 +169,7 @@ def vpg(env_fn, hidden_sizes=[64], lr=1e-2, epochs=50, batch_size=5000,
     pi_train_op = tf.train.AdamOptimizer(learning_rate=lr).minimize(pi_loss)
     v_train_op = tf.train.AdamOptimizer(learning_rate=lr).minimize(v_loss)
 
-    buf = VPGReplayBuffer(use_adv=True)
+    buf = VPGReplayBuffer(adv_fn="gae")
 
     sess = tf.Session()
     sess.run(tf.global_variables_initializer())
@@ -168,7 +190,8 @@ def vpg(env_fn, hidden_sizes=[64], lr=1e-2, epochs=50, batch_size=5000,
             ep_len += 1
             ep_ret += r
             if d:
-                buf.finish_path()
+                last_val = r
+                buf.finish_path(last_val)
                 o, r, d = env.reset(), 0, False
                 finished_rendering_this_epoch = True
                 batch_ep_lens.append(ep_len)

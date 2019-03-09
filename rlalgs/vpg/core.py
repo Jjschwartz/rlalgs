@@ -3,7 +3,25 @@ Core functions for use with Vanilla Policy Gradient (VPG) implementation
 """
 import tensorflow as tf
 import rlalgs.utils.utils as utils
+import scipy.signal
 from gym.spaces import Box, Discrete
+
+def discount_cumsum(x, discount):
+    """
+    magic from rllab for computing discounted cumulative sums of vectors.
+
+    input:
+        vector x,
+        [x0,
+         x1,
+         x2]
+
+    output:
+        [x0 + discount * x1 + discount^2 * x2,
+         x1 + discount * x2,
+         x2]
+    """
+    return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
 
 
 def mlp_actor_critic(x, a, action_space, hidden_sizes=[64],
