@@ -10,43 +10,42 @@ import rlalgs.utils.utils as utils
 import rlalgs.utils.logger as log
 from rlalgs.vpg.core import mlp_actor_critic
 import rlalgs.vpg.core as core
+import time
 
 # Just disables the warning, doesn't enable AVX/FMA
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 
-def reward_to_go(rews):
-    n = len(rews)
-    rtgs = np.zeros_like(rews)
-    for i in reversed(range(n)):
-        rtgs[i] = rews[i] + (rtgs[i+1] if i+1 < n else 0)
-    return rtgs
-
-
 class VPGReplayBuffer:
     """
     A buffer for VPG storing trajectories (o, a, r, v)
     """
-
     valid_fns = ["simple", "adv", "gae"]
 
-    def __init__(self, gamma=0.99, lmbda=0.97, adv_fn="simple"):
+    def __init__(self, obs_dim, act_dim, buffer_size, gamma=0.99, lmbda=0.97,
+                 adv_fn="simple"):
         """
         Init an empty buffer
 
         Arguments:
-            use_adv : whether to use an advantage function or not (if not then
-                      naive reward-to-go is used)
+            obs_dim : the dimensions of an environment observation
+            act_dim : the dimensions of an environment action
+            buffer_size : size of buffer
+            gamma : gamma discount hyperparam for GAE
+            lmbda : lambda hyperparam for GAE
+            adv_fn : the advantage function to use, must be a value in valid_fns
+                     class property
         """
         assert adv_fn in self.valid_fns
-        self.obs_buf = []
-        self.act_buf = []
-        self.rew_buf = []
-        self.val_buf = []
-        self.ret_buf = []
-        self.adv_buf = []
+        self.obs_buf = np.zeros(utils.combined_shape(buffer_size, obs_dim), dtype=np.float32)
+        self.act_buf = np.zeros(utils.combined_shape(buffer_size, act_dim), dtype=np.float32)
+        self.rew_buf = np.zeros(buffer_size, dtype=np.float32)
+        self.val_buf = np.zeros(buffer_size, dtype=np.float32)
+        self.ret_buf = np.zeros(buffer_size, dtype=np.float32)
+        self.adv_buf = np.zeros(buffer_size, dtype=np.float32)
         self.ptr, self.path_start_idx = 0, 0
+        self.max_size = buffer_size
         self.gamma = gamma
         self.lmbda = lmbda
         self.adv_fn = adv_fn
@@ -55,10 +54,11 @@ class VPGReplayBuffer:
         """
         Store a single step outcome (o, a, r, v) in the buffer
         """
-        self.obs_buf.append(o)
-        self.act_buf.append(a)
-        self.rew_buf.append(r)
-        self.val_buf.append(v)
+        assert self.ptr < self.max_size
+        self.obs_buf[self.ptr] = o
+        self.act_buf[self.ptr] = a
+        self.rew_buf[self.ptr] = r
+        self.val_buf[self.ptr] = v
         self.ptr += 1
 
     def finish_path(self, last_val=0):
@@ -80,9 +80,9 @@ class VPGReplayBuffer:
         """
         path_slice = slice(self.path_start_idx, self.ptr)
         ep_rews = self.rew_buf[path_slice]
-        ep_ret = reward_to_go(ep_rews)
-        self.ret_buf.extend(ep_ret)
-        self.adv_buf.extend(ep_ret)
+        ep_ret = utils.reward_to_go(ep_rews)
+        self.ret_buf[path_slice] = ep_ret
+        self.adv_buf[path_slice] = ep_ret
 
     def adv_path_finish(self):
         """
@@ -90,39 +90,33 @@ class VPGReplayBuffer:
         """
         path_slice = slice(self.path_start_idx, self.ptr)
         ep_rews = self.rew_buf[path_slice]
-        ep_vals = np.array(self.val_buf[path_slice])
-        ep_ret = reward_to_go(ep_rews)
-        self.ret_buf.extend(ep_ret)
-        self.adv_buf.extend(ep_ret - ep_vals)
+        ep_vals = self.val_buf[path_slice]
+        ep_ret = utils.reward_to_go(ep_rews)
+        self.ret_buf[path_slice] = ep_ret
+        self.adv_buf[path_slice] = ep_ret - ep_vals
 
     def gae_path_finish(self, last_val=0):
         """
         General advantage estimate
         """
         path_slice = slice(self.path_start_idx, self.ptr)
-        ep_rews = np.append(np.array(self.rew_buf[path_slice]), last_val)
-        ep_vals = np.append(np.array(self.val_buf[path_slice]), last_val)
+        ep_rews = np.append(self.rew_buf[path_slice], last_val)
+        ep_vals = np.append(self.val_buf[path_slice], last_val)
         # calculate GAE
         deltas = ep_rews[:-1] + self.gamma * ep_vals[1:] - ep_vals[:-1]
         ep_adv = core.discount_cumsum(deltas, self.gamma * self.lmbda)
         # calculate discounted reward to go for value function update
         ep_ret = core.discount_cumsum(ep_rews, self.gamma)[:-1]
-        self.adv_buf.extend(ep_adv)
-        self.ret_buf.extend(ep_ret)
+        self.ret_buf[path_slice] = ep_ret
+        self.adv_buf[path_slice] = ep_adv
 
     def get(self):
         """
-        Return the stored trajectories and empty the buffer
+        Return the stored trajectories and reset the buffer
         """
+        assert self.ptr == self.max_size
         self.ptr, self.path_start_idx = 0, 0
-        obs = self.obs_buf
-        acts = self.act_buf
-        rets = self.ret_buf
-        vals = self.val_buf
-        adv = self.adv_buf
-        self.obs_buf, self.act_buf, self.rew_buf = [], [], []
-        self.ret_buf, self.val_buf, self.adv_buf = [], [], []
-        return obs, acts, adv, rets, vals
+        return [self.obs_buf, self.act_buf, self.adv_buf, self.ret_buf, self.val_buf]
 
     def size(self):
         """
@@ -132,7 +126,7 @@ class VPGReplayBuffer:
 
 
 def vpg(env_fn, hidden_sizes=[64], lr=1e-2, epochs=50, batch_size=5000,
-        seed=0, render=False, render_last=False):
+        seed=0, render=False, render_last=False, exp_name=None):
     """
     Vanilla Policy Gradient
 
@@ -146,15 +140,17 @@ def vpg(env_fn, hidden_sizes=[64], lr=1e-2, epochs=50, batch_size=5000,
     seed : random seed
     render : whether to render environment or not
     render_last : whether to render environment after final epoch
+    exp_name : name for experiment output files (if None, defaults to "vpg_envname")
     """
     tf.set_random_seed(seed)
     np.random.seed(seed)
 
     env = env_fn()
-    # obs_dim = utils.get_dim_from_space(env.observation_space)
-    # act_dim = utils.get_dim_from_space(env.action_space)
+    obs_dim = utils.get_dim_from_space(env.observation_space)
+    act_dim = env.action_space.shape
 
-    logger = log.Logger(output_fname="vpg_" + env.spec.id + ".txt")
+    output_name = "vpg_" + env.spec.id if exp_name is None else exp_name
+    logger = log.Logger(output_fname=output_name + ".txt")
 
     obs_ph = utils.placeholder_from_space(env.observation_space, obs_space=True,
                                           name=log.OBS_NAME)
@@ -169,7 +165,7 @@ def vpg(env_fn, hidden_sizes=[64], lr=1e-2, epochs=50, batch_size=5000,
     pi_train_op = tf.train.AdamOptimizer(learning_rate=lr).minimize(pi_loss)
     v_train_op = tf.train.AdamOptimizer(learning_rate=lr).minimize(v_loss)
 
-    buf = VPGReplayBuffer(adv_fn="gae")
+    buf = VPGReplayBuffer(obs_dim, act_dim, batch_size, adv_fn="gae")
 
     sess = tf.Session()
     sess.run(tf.global_variables_initializer())
@@ -179,25 +175,38 @@ def vpg(env_fn, hidden_sizes=[64], lr=1e-2, epochs=50, batch_size=5000,
         finished_rendering_this_epoch = False
         ep_len, ep_ret = 0, 0
         batch_ep_lens, batch_ep_rets = [], []
+        t = 0
 
         while True:
             if not finished_rendering_this_epoch and render:
                 env.render()
+
             o = utils.process_obs(o, env.observation_space)
+
             a, v_t = sess.run([pi, v], {obs_ph: o.reshape(1, -1)})
             buf.store(o, a[0], r, v_t[0])
             o, r, d, _ = env.step(a[0])
+
             ep_len += 1
             ep_ret += r
-            if d:
-                last_val = r
+            t += 1
+
+            if d or (t == batch_size):
+                # set last_val as final reward or value of final state
+                # since we may end epoch not at terminal state
+                if d:
+                    last_val = r
+                else:
+                    o = utils.process_obs(o, env.observation_space)
+                    last_val = sess.run(v, {obs_ph: o.reshape(1, -1)})
                 buf.finish_path(last_val)
+
                 o, r, d = env.reset(), 0, False
                 finished_rendering_this_epoch = True
                 batch_ep_lens.append(ep_len)
                 batch_ep_rets.append(ep_ret)
                 ep_len, ep_ret = 0, 0
-                if buf.size() > batch_size:
+                if t == batch_size:
                     break
 
         batch_obs, batch_acts, batch_adv, batch_rets, batch_vals = buf.get()
@@ -212,16 +221,23 @@ def vpg(env_fn, hidden_sizes=[64], lr=1e-2, epochs=50, batch_size=5000,
 
         return pi_l, v_l, batch_ep_rets, batch_ep_lens
 
+    total_epoch_times = 0
     for i in range(epochs):
+        epoch_start = time.time()
         results = train_one_epoch()
+        epoch_time = time.time() - epoch_start
+        total_epoch_times += epoch_time
         logger.log_tabular("epoch", i)
         logger.log_tabular("pi_loss", results[0])
         logger.log_tabular("v_loss", results[1])
         logger.log_tabular("avg_return", np.mean(results[2]))
         logger.log_tabular("avg_ep_lens", np.mean(results[3]))
+        logger.log_tabular("epoch_time", epoch_time)
         logger.dump_tabular()
 
-    log.save_model(sess, "vpg_" + env.spec.id, env, {log.OBS_NAME: obs_ph},
+    print("Average epoch time = ", total_epoch_times/epochs)
+
+    log.save_model(sess, output_name, env, {log.OBS_NAME: obs_ph},
                    {log.ACTS_NAME: pi})
 
     if render_last:
@@ -248,8 +264,10 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=1e-2)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--exp_name", type=str, default=None)
     args = parser.parse_args()
 
     print("\nVanilla Policy Gradient")
     vpg(lambda: gym.make(args.env), epochs=args.epochs, lr=args.lr,
-        seed=args.seed, render=args.render, render_last=args.renderlast)
+        seed=args.seed, render=args.render, render_last=args.renderlast,
+        exp_name=args.exp_name)
