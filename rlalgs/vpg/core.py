@@ -6,6 +6,7 @@ import rlalgs.utils.utils as utils
 import scipy.signal
 from gym.spaces import Box, Discrete
 
+
 def discount_cumsum(x, discount):
     """
     magic from rllab for computing discounted cumulative sums of vectors.

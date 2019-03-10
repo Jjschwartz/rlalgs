@@ -40,8 +40,9 @@ def placeholder_from_space(space, obs_space=False, name=None):
         if obs_space:
             return tf.placeholder(tf.float32, shape=combined_shape(None, dim), name=name)
         return tf.placeholder(tf.int32, shape=(None, ), name=name)
-    if isinstance(space, Box):
+    elif isinstance(space, Box):
         return tf.placeholder(tf.float32, shape=combined_shape(None, space.shape), name=name)
+    raise NotImplementedError
 
 
 def combined_shape(length, shape=None):
@@ -64,6 +65,17 @@ def process_obs(o, obs_space):
     if isinstance(obs_space, Discrete):
         return np.eye(obs_space.n)[o]
     return o
+
+
+def reward_to_go(rews):
+    """
+    Calculate the reward-to-go return for each step in a given episode
+    """
+    n = len(rews)
+    rtgs = np.zeros_like(rews)
+    for i in reversed(range(n)):
+        rtgs[i] = rews[i] + (rtgs[i+1] if i+1 < n else 0)
+    return rtgs
 
 
 def mlp(x, output_size, hidden_sizes=[64], activation=tf.tanh, output_activation=None):
