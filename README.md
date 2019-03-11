@@ -5,7 +5,11 @@ A collection of implementations of RL algorithms in Python. Developed for my own
 ### Algorithms implemented
 1. Simple Policy gradient:
   - using only a policy network and no advantage function
-  - also imlemented using reward-to-go
+  - also implemented using reward-to-go
+2. Vanilla Policy Gradient
+  - using reward-to-go, simple advantage function (Q(s, a) - V(s)) and GAE
+3. Deep Q-network with experience replay
+  - Based off of the original DQN paper (Mnih et al (2013))
 
 
 ### Resources used
