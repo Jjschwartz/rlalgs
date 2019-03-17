@@ -4,3 +4,5 @@ rlalgs\.egg-info/
 *.pyc
 
 rlalgs/data/
+
+rlalgs/dqn/output/

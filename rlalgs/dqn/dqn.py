@@ -11,21 +11,19 @@ Features of the DQN paper (for atari):
 - Epsilon annealed from 1 to 0.1 over first 1 million frames
 - trained for 10 million frames
 """
-"""
-TODO
-- change algorithm to iterate based off of steps not episodes
-- add epsilon annealing
-    - change epsilon each step
-    - need epsilon period
-"""
 import gym
 import time
+import sys
 from gym.spaces import Discrete
 import tensorflow as tf
 import numpy as np
 import rlalgs.utils.utils as utils
 import rlalgs.dqn.core as core
 import rlalgs.utils.logger as log
+
+# Just disables the warning, doesn't enable AVX/FMA
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 
 class DQNReplayBuffer:
@@ -71,9 +69,9 @@ class DQNReplayBuffer:
                 "d": self.done_buf[sample_idxs]}
 
 
-def dqn(env_fn, hidden_sizes=[64], lr=1e-2, epochs=50, epoch_episodes=100, batch_size=32,
-        seed=0, replay_size=10000, epsilon=0.05, gamma=0.99, render=False, render_last=False,
-        exp_name=None):
+def dqn(env_fn, hidden_sizes=[64], lr=1e-3, epochs=50, epoch_steps=10000, batch_size=32,
+        seed=0, replay_size=10000, epsilon=0.05, gamma=1, start_steps=100000, render=False,
+        render_last=False, exp_name=None):
     """
     Deep Q-network with experience replay
 
@@ -87,6 +85,7 @@ def dqn(env_fn, hidden_sizes=[64], lr=1e-2, epochs=50, epoch_episodes=100, batch
     seed : random seed
     epsilon : random action selection parameter
     gamma : discount parameter
+    start_steps : the epsilon annealing period in number of steps
     render : whether to render environment or not
     render_last : whether to render environment after final epoch
     exp_name : name for experiment output files (if None, defaults to "dqn_envname")
@@ -113,41 +112,95 @@ def dqn(env_fn, hidden_sizes=[64], lr=1e-2, epochs=50, epoch_episodes=100, batch
     obs_prime_ph = utils.placeholder_from_space(env.observation_space, obs_space=True)
     done_ph = tf.placeholder(tf.float32, shape=(None, ))
 
-    pi, q_val_max, act_q_val = core.q_network(obs_ph, act_ph, env.action_space, hidden_sizes)
-    target = rew_ph + gamma*(1-done_ph)*q_val_max
+    with tf.variable_scope("main"):
+        pi, q_pi, act_q_val, q_vals = core.q_network(obs_ph, act_ph, env.action_space, hidden_sizes)
 
+    with tf.variable_scope("target"):
+        pi_targ, q_pi_targ, _, q_vals_targ = core.q_network(obs_prime_ph, act_ph, env.action_space, hidden_sizes)
+
+    target = tf.stop_gradient(rew_ph + gamma*(1-done_ph)*q_pi_targ)
     q_loss = tf.reduce_mean((target - act_q_val)**2)
-    q_train_op = tf.train.AdamOptimizer(learning_rate=lr).minimize(q_loss)
+    q_optimizer = tf.train.AdamOptimizer(learning_rate=lr)
+    q_train_op = q_optimizer.minimize(q_loss)
+
+    # update target network to match main network
+    target_init = tf.group([v_targ.assign(v_main) for v_main, v_targ
+                            in zip(core.get_vars("main"), core.get_vars("target"))])
+
+    polyak = 0.0995
+    target_update = tf.group([v_targ.assign(polyak*v_targ + (1-polyak)*v_main)
+                              for v_main, v_targ
+                              in zip(core.get_vars('main'), core.get_vars('target'))])
 
     buf = DQNReplayBuffer(obs_dim, act_dim, replay_size)
 
+    epsilon_schedule = np.linspace(1, epsilon, start_steps)
+
     sess = tf.Session()
     sess.run(tf.global_variables_initializer())
+    sess.run(target_init)
 
-    def get_action(o):
-        if np.random.rand(1) < epsilon:
+    # writer = tf.summary.FileWriter("output", sess.graph)
+    # print(sess.run(pi))
+    # writer.close()
+
+    def get_action(o, t):
+        eps = epsilon if t >= start_steps else epsilon_schedule[t]
+        if np.random.rand(1) < eps:
             a = np.random.choice(num_actions)
         else:
-            o_processed = o = utils.process_obs(o, env.observation_space)
-            a = sess.run(pi, {obs_ph: o_processed.reshape(1, -1)})[0]
+            o_processed = utils.process_obs(o, env.observation_space)
+            a = sess.run(pi, {obs_ph: o_processed.reshape(1, -1)})
         return a
 
-    def update():
-        batch = buf.sample(batch_size)
+    def update(t):
+        # batch = buf.sample(batch_size)
+        batch = buf.sample(1)
         feed_dict = {obs_ph: batch['o'],
                      act_ph: batch["a"],
                      rew_ph: batch["r"],
                      obs_prime_ph: batch["o_prime"],
                      done_ph: batch["d"]
                      }
+
+        # if t == 0:
+        #     writer = tf.summary.FileWriter("output", sess.graph)
+        #     print(sess.run(target, feed_dict))
+        #     writer.close()
+        #     input()
+
+        if t % 100 == 0:
+            q_o, q_targ, tgt, actq = sess.run([q_pi, q_pi_targ, target, act_q_val], feed_dict)
+            og_prime = sess.run([q_pi], feed_dict={obs_ph: batch["o_prime"]})
+            print("\nr:", batch["r"])
+            print("q_o:", q_o)    # value of pi(o)
+            print("og_prime:", og_prime)
+            print("q_o_prime:", q_targ)     # value of pi(o')
+            print("target:", tgt)       # r + gamma*q_targ
+            print("act_q_val:", actq)   # value of Q(o, a)
+            input()
+
         batch_loss, _ = sess.run([q_loss, q_train_op], feed_dict)
+
+        if t > 0 and t % 1000 == 0:
+            print("target_update")
+            sess.run(target_update)
+
+        # debug the Q function in poin S
+        if t % 100 == 0:
+            S = np.array([-0.01335408, -0.04600273, -0.00677248, 0.01517507])
+            a, q = sess.run([pi, q_pi], {obs_ph: S.reshape(1, -1)})
+            print("Debug: pi={}, q={}".format(a, q))
+            sys.stdout.flush()
+
         return batch_loss
 
     def train_one_epoch():
         finished_rendering_this_epoch = False
         epoch_ep_lens, epoch_ep_rets, epoch_ep_loss = [], [], []
 
-        for e in range(epoch_episodes):
+        t = 0
+        while t < epoch_steps:
             if not finished_rendering_this_epoch and render:
                 env.render()
 
@@ -156,14 +209,17 @@ def dqn(env_fn, hidden_sizes=[64], lr=1e-2, epochs=50, epoch_episodes=100, batch
             ep_loss = []
 
             while not d:
-                a = get_action(o)
+                a = get_action(o, t)
                 o_prime, r, d, _ = env.step(a)
                 buf.store(o, a, r, o_prime, d)
                 ep_len += 1
                 ep_ret += r
                 o = o_prime
-                batch_loss = update()
+                batch_loss = update(t)
                 ep_loss.append(batch_loss)
+                t += 1
+                if t >= epoch_steps:
+                    break
 
             finished_rendering_this_epoch = True
             epoch_ep_lens.append(ep_len)
@@ -180,6 +236,7 @@ def dqn(env_fn, hidden_sizes=[64], lr=1e-2, epochs=50, epoch_episodes=100, batch
         logger.log_tabular("pi_loss", np.mean(results[0]))
         logger.log_tabular("avg_return", np.mean(results[1]))
         logger.log_tabular("avg_ep_lens", np.mean(results[2]))
+        logger.log_tabular("total_steps", np.sum(results[2]))
         logger.log_tabular("epoch_time", epoch_time)
         logger.dump_tabular()
 
@@ -204,7 +261,7 @@ if __name__ == "__main__":
     parser.add_argument("--env", type=str, default='CartPole-v0')
     parser.add_argument("--render", action="store_true")
     parser.add_argument("--renderlast", action="store_true")
-    parser.add_argument("--lr", type=float, default=1e-2)
+    parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--exp_name", type=str, default=None)
