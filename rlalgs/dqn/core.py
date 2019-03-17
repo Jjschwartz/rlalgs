@@ -7,14 +7,9 @@ import rlalgs.utils.utils as utils
 
 
 def get_vars(scope):
-    print("\n")
-    print(scope)
-    scope_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=scope)
-    for var in scope_vars:
-        print(var)
+    # scope_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=scope)
+    scope_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=scope)
     return scope_vars
-    # return tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=scope)
-    # return [x for x in tf.global_variables() if scope in x.name]
 
 
 def count_vars(scope):
@@ -42,7 +37,7 @@ def mlp(x, output_size, hidden_sizes=[64], activation=tf.tanh, output_activation
 
 
 def q_network(x, a, action_space, hidden_sizes=[64], activation=tf.nn.relu,
-              output_activation=tf.tanh):
+              output_activation=None):
     """
     Create a Q-network as a fully connected neural network, where the output
     layer is the q-value for each action in the action space

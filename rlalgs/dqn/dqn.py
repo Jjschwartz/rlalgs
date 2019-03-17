@@ -70,7 +70,7 @@ class DQNReplayBuffer:
 
 
 def dqn(env_fn, hidden_sizes=[64], lr=1e-3, epochs=50, epoch_steps=10000, batch_size=32,
-        seed=0, replay_size=10000, epsilon=0.05, gamma=1, start_steps=100000, render=False,
+        seed=0, replay_size=10000, epsilon=0.05, gamma=0.99, start_steps=100000, render=False,
         render_last=False, exp_name=None):
     """
     Deep Q-network with experience replay
@@ -116,10 +116,12 @@ def dqn(env_fn, hidden_sizes=[64], lr=1e-3, epochs=50, epoch_steps=10000, batch_
         pi, q_pi, act_q_val, q_vals = core.q_network(obs_ph, act_ph, env.action_space, hidden_sizes)
 
     with tf.variable_scope("target"):
-        pi_targ, q_pi_targ, _, q_vals_targ = core.q_network(obs_prime_ph, act_ph, env.action_space, hidden_sizes)
+        pi_targ, q_pi_targ, _, q_vals_targ = core.q_network(obs_prime_ph, act_ph, env.action_space,
+                                                            hidden_sizes)
 
-    target = tf.stop_gradient(rew_ph + gamma*(1-done_ph)*q_pi_targ)
-    q_loss = tf.reduce_mean((target - act_q_val)**2)
+    target = rew_ph + gamma*(1-done_ph)*q_pi_targ
+    # target = rew_ph + (q_pi_targ)
+    q_loss = tf.reduce_mean((tf.stop_gradient(target) - act_q_val)**2)
     q_optimizer = tf.train.AdamOptimizer(learning_rate=lr)
     q_train_op = q_optimizer.minimize(q_loss)
 
@@ -135,17 +137,19 @@ def dqn(env_fn, hidden_sizes=[64], lr=1e-3, epochs=50, epoch_steps=10000, batch_
     buf = DQNReplayBuffer(obs_dim, act_dim, replay_size)
 
     epsilon_schedule = np.linspace(1, epsilon, start_steps)
+    global total_t
+    total_t = 0
 
     sess = tf.Session()
     sess.run(tf.global_variables_initializer())
     sess.run(target_init)
 
-    # writer = tf.summary.FileWriter("output", sess.graph)
-    # print(sess.run(pi))
-    # writer.close()
-
-    def get_action(o, t):
-        eps = epsilon if t >= start_steps else epsilon_schedule[t]
+    def get_action(o):
+        global total_t
+        eps = epsilon if total_t >= start_steps else epsilon_schedule[total_t]
+        total_t += 1
+        if total_t % 1000 == 0:
+            print("epsilon =", eps)
         if np.random.rand(1) < eps:
             a = np.random.choice(num_actions)
         else:
@@ -154,8 +158,7 @@ def dqn(env_fn, hidden_sizes=[64], lr=1e-3, epochs=50, epoch_steps=10000, batch_
         return a
 
     def update(t):
-        # batch = buf.sample(batch_size)
-        batch = buf.sample(1)
+        batch = buf.sample(batch_size)
         feed_dict = {obs_ph: batch['o'],
                      act_ph: batch["a"],
                      rew_ph: batch["r"],
@@ -163,31 +166,13 @@ def dqn(env_fn, hidden_sizes=[64], lr=1e-3, epochs=50, epoch_steps=10000, batch_
                      done_ph: batch["d"]
                      }
 
-        # if t == 0:
-        #     writer = tf.summary.FileWriter("output", sess.graph)
-        #     print(sess.run(target, feed_dict))
-        #     writer.close()
-        #     input()
-
-        if t % 100 == 0:
-            q_o, q_targ, tgt, actq = sess.run([q_pi, q_pi_targ, target, act_q_val], feed_dict)
-            og_prime = sess.run([q_pi], feed_dict={obs_ph: batch["o_prime"]})
-            print("\nr:", batch["r"])
-            print("q_o:", q_o)    # value of pi(o)
-            print("og_prime:", og_prime)
-            print("q_o_prime:", q_targ)     # value of pi(o')
-            print("target:", tgt)       # r + gamma*q_targ
-            print("act_q_val:", actq)   # value of Q(o, a)
-            input()
-
         batch_loss, _ = sess.run([q_loss, q_train_op], feed_dict)
 
         if t > 0 and t % 1000 == 0:
-            print("target_update")
             sess.run(target_update)
 
-        # debug the Q function in poin S
-        if t % 100 == 0:
+        # debug the Q function at point S
+        if t % 10000 == 0:
             S = np.array([-0.01335408, -0.04600273, -0.00677248, 0.01517507])
             a, q = sess.run([pi, q_pi], {obs_ph: S.reshape(1, -1)})
             print("Debug: pi={}, q={}".format(a, q))
@@ -209,7 +194,7 @@ def dqn(env_fn, hidden_sizes=[64], lr=1e-3, epochs=50, epoch_steps=10000, batch_
             ep_loss = []
 
             while not d:
-                a = get_action(o, t)
+                a = get_action(o)
                 o_prime, r, d, _ = env.step(a)
                 buf.store(o, a, r, o_prime, d)
                 ep_len += 1
