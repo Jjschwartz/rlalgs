@@ -38,6 +38,11 @@ def proc_id():
     return MPI.COMM_WORLD.Get_rank()
 
 
+def num_procs():
+    """ Get number of processes running """
+    return MPI.COMM_WORLD.Get_size()
+
+
 def print_msg(msg, context=""):
     """ Print message including rank of process and optional context """
     print("Message from %d - %s: %s" % (proc_id(), context, str(msg)))
