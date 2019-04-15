@@ -125,8 +125,8 @@ class VPGReplayBuffer:
         return self.ptr
 
 
-def vpg(env_fn, hidden_sizes=[64], lr=1e-2, epochs=50, batch_size=5000,
-        seed=0, render=False, render_last=False, exp_name=None):
+def vpg(env_fn, hidden_sizes=[64], pi_lr=1e-2, v_lr=1e-3, gamma=0.99, epochs=50,
+        batch_size=5000, seed=0, render=False, render_last=False, logger_kwargs=dict()):
     """
     Vanilla Policy Gradient
 
@@ -140,20 +140,19 @@ def vpg(env_fn, hidden_sizes=[64], lr=1e-2, epochs=50, batch_size=5000,
     seed : random seed
     render : whether to render environment or not
     render_last : whether to render environment after final epoch
-    exp_name : name for experiment output files (if None, defaults to "vpg_envname")
+    logger_kwargs : dictionary of keyword arguments for logger
     """
+    tf.reset_default_graph()
     tf.set_random_seed(seed)
     np.random.seed(seed)
+
+    logger = log.Logger(**logger_kwargs)
 
     env = env_fn()
     obs_dim = utils.get_dim_from_space(env.observation_space)
     act_dim = env.action_space.shape
 
-    output_name = "vpg_" + env.spec.id if exp_name is None else exp_name
-    logger = log.Logger(output_fname=output_name + ".txt")
-
-    obs_ph = utils.placeholder_from_space(env.observation_space, obs_space=True,
-                                          name=log.OBS_NAME)
+    obs_ph = utils.placeholder_from_space(env.observation_space, True, log.OBS_NAME)
     act_ph = utils.placeholder_from_space(env.action_space)
     ret_ph = tf.placeholder(tf.float32, shape=(None, ))
     adv_ph = tf.placeholder(tf.float32, shape=(None, ))
@@ -162,10 +161,10 @@ def vpg(env_fn, hidden_sizes=[64], lr=1e-2, epochs=50, batch_size=5000,
     pi_loss = -tf.reduce_mean(logp * adv_ph)
     v_loss = tf.reduce_mean((ret_ph - v)**2)
 
-    pi_train_op = tf.train.AdamOptimizer(learning_rate=lr).minimize(pi_loss)
-    v_train_op = tf.train.AdamOptimizer(learning_rate=lr).minimize(v_loss)
+    pi_train_op = tf.train.AdamOptimizer(learning_rate=pi_lr).minimize(pi_loss)
+    v_train_op = tf.train.AdamOptimizer(learning_rate=v_lr).minimize(v_loss)
 
-    buf = VPGReplayBuffer(obs_dim, act_dim, batch_size, adv_fn="gae")
+    buf = VPGReplayBuffer(obs_dim, act_dim, batch_size, gamma=gamma, adv_fn="gae")
 
     sess = tf.Session()
     sess.run(tf.global_variables_initializer())
@@ -237,7 +236,7 @@ def vpg(env_fn, hidden_sizes=[64], lr=1e-2, epochs=50, batch_size=5000,
 
     print("Average epoch time = ", total_epoch_times/epochs)
 
-    log.save_model(sess, output_name, env, {log.OBS_NAME: obs_ph},
+    log.save_model(sess, logger_kwargs["output_dir"], env, {log.OBS_NAME: obs_ph},
                    {log.ACTS_NAME: pi})
 
     if render_last:
@@ -254,6 +253,8 @@ def vpg(env_fn, hidden_sizes=[64], lr=1e-2, epochs=50, batch_size=5000,
                 finished_rendering_this_epoch = True
         print("Final return: %.3f" % (final_ret))
 
+    return logger.get_output_filename()
+
 
 if __name__ == "__main__":
     import argparse
@@ -261,13 +262,18 @@ if __name__ == "__main__":
     parser.add_argument("--env", type=str, default='CartPole-v0')
     parser.add_argument("--render", action="store_true")
     parser.add_argument("--renderlast", action="store_true")
-    parser.add_argument("--lr", type=float, default=1e-2)
+    parser.add_argument("--pi_lr", type=float, default=1e-2)
+    parser.add_argument("--v_lr", type=float, default=1e-3)
+    parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--exp_name", type=str, default=None)
     args = parser.parse_args()
 
+    exp_name = "vpg_" + args.env if args.exp_name is None else args.exp_name
+    logger_kwargs = log.setup_logger_kwargs(exp_name, seed=args.seed)
+
     print("\nVanilla Policy Gradient")
-    vpg(lambda: gym.make(args.env), epochs=args.epochs, lr=args.lr,
-        seed=args.seed, render=args.render, render_last=args.renderlast,
-        exp_name=args.exp_name)
+    vpg(lambda: gym.make(args.env), epochs=args.epochs, pi_lr=args.pi_lr, v_lr=args.v_lr,
+        gamma=args.gamma, seed=args.seed, render=args.render, render_last=args.renderlast,
+        logger_kwargs=logger_kwargs)

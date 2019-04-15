@@ -6,7 +6,7 @@ import gym as gym
 import numpy as np
 from mpi4py import MPI
 import tensorflow as tf
-import rlalgs.a2c.mpi as mpi
+import rlalgs.utils.mpi as mpi
 import rlalgs.a2c.core as core
 import rlalgs.utils.utils as utils
 from rlalgs.utils.logger import Logger, OBS_NAME

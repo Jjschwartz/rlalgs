@@ -6,11 +6,12 @@ Also provides functionality for saving and restoring a model
 
 Inspired heavily by OpenAI spinningup logger, which was in turn inspired by rllab's logging.
 """
-import os.path as osp
+import os
 import atexit
 import shutil
-import tensorflow as tf
 import pickle
+import os.path as osp
+import tensorflow as tf
 
 
 DEFAULT_DIR = osp.join(osp.abspath(osp.dirname(osp.dirname(__file__))), 'data')
@@ -18,14 +19,45 @@ OBS_NAME = "x"
 ACTS_NAME = "pi"
 
 
-def save_model(sess, save_name, env, inputs, outputs):
-    output_dir = osp.join(DEFAULT_DIR, save_name + "/")
-    if osp.exists(output_dir):
-        shutil.rmtree(output_dir)
-    saver = tf.train.Saver()
-    saver.save(sess, output_dir + save_name)
+def setup_logger_kwargs(exp_name, data_dir=None, seed=None):
+    """
+    Set up output directory for logger.
 
-    info_file = open(osp.join(output_dir + "exp_info.pkl"), "wb")
+    if seed is None:
+        output_dir = data_dir/exp_name
+    else:
+        output_dir = data_dir/exp_name/exp_name_s[seed]
+
+    Arguments:
+        exp_name : name for experiment
+        data_dir : path to folder where results should be saved
+            if None uses DEFAULT_DIR
+        seed : seed for random number generators used by experiment
+
+    Returns:
+        logger_kwargs : dictionary containing output_dir and exp_name
+    """
+    if data_dir is None:
+        data_dir = DEFAULT_DIR
+
+    if seed is not None:
+        subfolder = ''.join([exp_name, '_s', str(seed)])
+        expfolder = osp.join(exp_name, subfolder)
+    else:
+        expfolder = exp_name
+    output_dir = osp.join(data_dir, expfolder)
+
+    return dict(output_dir=output_dir, exp_name=exp_name)
+
+
+def save_model(sess, output_dir, env, inputs, outputs):
+    model_dir = osp.join(output_dir, "simple_save")
+    if osp.exists(model_dir):
+        shutil.rmtree(model_dir)
+    saver = tf.train.Saver()
+    saver.save(sess, osp.join(model_dir, "model"))
+
+    info_file = open(osp.join(model_dir, "exp_info.pkl"), "wb")
     info = {"env": env.spec.id,
             "inputs": {k: v.name for k, v in inputs.items()},
             "outputs": {k: v.name for k, v in outputs.items()}}
@@ -33,13 +65,12 @@ def save_model(sess, save_name, env, inputs, outputs):
     info_file.close()
 
 
-def restore_model(sess, save_name):
-    output_dir = osp.join(DEFAULT_DIR, save_name + "/")
-    saver = tf.train.import_meta_graph(output_dir + save_name + ".meta")
-    saver.restore(sess, output_dir + save_name)
+def restore_model(sess, model_dir):
+    saver = tf.train.import_meta_graph(osp.join(model_dir, "model" + ".meta"))
+    saver.restore(sess, osp.join(model_dir, "model"))
     graph = tf.get_default_graph()
 
-    info_file = open(osp.join(output_dir + "exp_info.pkl"), "rb")
+    info_file = open(osp.join(model_dir, "exp_info.pkl"), "rb")
     info = pickle.load(info_file)
     info_file.close()
 
@@ -49,9 +80,8 @@ def restore_model(sess, save_name):
     return model_vars
 
 
-def get_env_name(save_name):
-    output_dir = osp.join(DEFAULT_DIR, save_name + "/")
-    info_file = open(osp.join(output_dir + "exp_info.pkl"), "rb")
+def get_env_name(model_dir):
+    info_file = open(osp.join(model_dir, "exp_info.pkl"), "rb")
     info = pickle.load(info_file)
     info_file.close()
     return info["env"]
@@ -69,7 +99,7 @@ class Logger:
 
     """
 
-    def __init__(self, output_dir=None, output_fname="progress.txt"):
+    def __init__(self, output_dir=None, output_fname="progress.txt", exp_name=None):
         """
         Initialize logger to write to output_dir/output_file
 
@@ -79,12 +109,18 @@ class Logger:
             str output_fname : the name of output file
         """
         self.output_dir = DEFAULT_DIR if output_dir is None else output_dir
-        self.output_file = open(osp.join(self.output_dir, output_fname), "w")
+        if osp.exists(self.output_dir):
+            print("Warning: Log dir %s already exists, but storing there anyway ;)")
+        else:
+            os.makedirs(self.output_dir)
+        self.output_fname = osp.join(self.output_dir, output_fname)
+        self.output_file = open(self.output_fname, "w")
         # closes file when module exits
         atexit.register(self.output_file.close)
         self.first_row = True
         self.headers = []
         self.log_current_row = {}
+        self.exp_name = exp_name
 
     def log_tabular(self, key, value):
         """
@@ -125,3 +161,6 @@ class Logger:
         print("{}".format("-"*2*(max_header_len + 8)))
         self.log_current_row.clear()
         self.first_row = False
+
+    def get_output_filename(self):
+        return self.output_fname

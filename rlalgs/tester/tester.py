@@ -22,7 +22,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("fpath", metavar='fpath', type=str,
-                        help="saved model directory name")
+                        help="saved model directory name (i.e. the simple_save folder)")
     parser.add_argument("--trials", type=int, default=100)
     args = parser.parse_args()
 
