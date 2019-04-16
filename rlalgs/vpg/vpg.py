@@ -125,7 +125,7 @@ class VPGReplayBuffer:
         return self.ptr
 
 
-def vpg(env_fn, hidden_sizes=[64], pi_lr=1e-2, v_lr=1e-3, gamma=0.99, epochs=50,
+def vpg(env_fn, hidden_sizes=[64], pi_lr=1e-2, v_lr=1e-3, gamma=0.995, epochs=50,
         batch_size=5000, seed=0, render=False, render_last=False, logger_kwargs=dict()):
     """
     Vanilla Policy Gradient
@@ -147,6 +147,7 @@ def vpg(env_fn, hidden_sizes=[64], pi_lr=1e-2, v_lr=1e-3, gamma=0.99, epochs=50,
     np.random.seed(seed)
 
     logger = log.Logger(**logger_kwargs)
+    logger.save_config(locals())
 
     env = env_fn()
     obs_dim = utils.get_dim_from_space(env.observation_space)
@@ -221,17 +222,20 @@ def vpg(env_fn, hidden_sizes=[64], pi_lr=1e-2, v_lr=1e-3, gamma=0.99, epochs=50,
         return pi_l, v_l, batch_ep_rets, batch_ep_lens
 
     total_epoch_times = 0
+    avg_epoch_returns = []
     for i in range(epochs):
         epoch_start = time.time()
         results = train_one_epoch()
         epoch_time = time.time() - epoch_start
         total_epoch_times += epoch_time
+        avg_return = np.mean(results[2])
         logger.log_tabular("epoch", i)
         logger.log_tabular("pi_loss", results[0])
         logger.log_tabular("v_loss", results[1])
-        logger.log_tabular("avg_return", np.mean(results[2]))
+        logger.log_tabular("avg_return", avg_return)
         logger.log_tabular("avg_ep_lens", np.mean(results[3]))
         logger.log_tabular("epoch_time", epoch_time)
+        avg_epoch_returns.append(avg_return)
         logger.dump_tabular()
 
     print("Average epoch time = ", total_epoch_times/epochs)
@@ -253,7 +257,7 @@ def vpg(env_fn, hidden_sizes=[64], pi_lr=1e-2, v_lr=1e-3, gamma=0.99, epochs=50,
                 finished_rendering_this_epoch = True
         print("Final return: %.3f" % (final_ret))
 
-    return logger.get_output_filename()
+    return {"avg_epoch_returns": avg_epoch_returns}
 
 
 if __name__ == "__main__":

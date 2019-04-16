@@ -6,3 +6,5 @@ rlalgs\.egg-info/
 rlalgs/data/
 
 rlalgs/dqn/output/
+
+rlalgs/vpg/vpg_tune/

@@ -7,13 +7,10 @@ from rlalgs.experiments.grid_tuner import GridTuner
 
 
 HYPERPARAMS = {
-     # "pi_lr": (0.01, [0.1, 0.01, 0.001]),
-     "pi_lr": (0.01, [0.1, 0.01]),
-     # "v_lr": (0.01, [0.1, 0.01, 0.001]),
-     # "gamma": (0.99, [0.9, 0.99, 1]),
-     # "hid_num": (1, [1, 2]),
-     # "hidden_sizes": (64, [32, 64, 256])
-     "hidden_sizes": ([32], [[32], [256]])
+     "pi_lr": (0.01, [0.1, 0.01, 0.001]),
+     "v_lr": (0.01, [0.1, 0.01, 0.001]),
+     # "gamma": (0.99, [0.9, 0.995, 1]),
+     "hidden_sizes": ([64], [[32], [64], [256], [64, 64], [100, 50, 25], [400, 300]])
 }
 
 
@@ -35,22 +32,15 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", type=str, default='CartPole-v0')
-    parser.add_argument("--num_runs", type=int, default=3)
+    parser.add_argument("--num_runs", type=int, default=5)
     args = parser.parse_args()
 
-    tuner = GridTuner(name="VPG_"+args.env)
+    tuner = GridTuner(name="VPG_"+args.env, seeds=args.num_runs)
     seeds = list(range(args.num_runs))
     tuner.add('env_name', args.env)
-    tuner.add('seed', seeds)
+    tuner.add('epochs', 50)
 
     for k, v in HYPERPARAMS.items():
         tuner.add(k, v[1])
 
-    tuner.print_info()
-
-    variants = tuner.variants()
-    print("Number of variants: {}".format(len(variants)))
-    for var in variants:
-        print(tuner.name_variant(var), var)
-
-    tuner.run(vpg, num_cpu=1, data_dir=None)
+    tuner.run(vpg, num_cpu=1, data_dir="vpg_tune")
