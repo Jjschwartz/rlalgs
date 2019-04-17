@@ -9,12 +9,12 @@ Based off of OpenAI's spinningup implementation of policy gradient
 
 N.B. some of the code is extra verbose to help with understanding
 """
-import numpy as np
 import gym
+import numpy as np
 import tensorflow as tf
+import rlalgs.utils.utils as utils
 import rlalgs.basicpg.core as core
 from rlalgs.utils.logger import Logger
-import rlalgs.utils.utils as utils
 
 # Just disables the warning, doesn't enable AVX/FMA
 import os

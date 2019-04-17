@@ -1,8 +1,8 @@
 """
 Some core functions for Deep Q-network implementation
 """
-import tensorflow as tf
 import numpy as np
+import tensorflow as tf
 import rlalgs.utils.utils as utils
 
 

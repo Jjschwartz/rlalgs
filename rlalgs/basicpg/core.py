@@ -1,7 +1,7 @@
-import tensorflow as tf
 import numpy as np
-from gym.spaces import Box, Discrete
+import tensorflow as tf
 import rlalgs.utils.utils as utils
+from gym.spaces import Box, Discrete
 
 
 class SimpleBuffer:

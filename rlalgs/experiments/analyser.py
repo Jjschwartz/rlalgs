@@ -5,6 +5,7 @@ Providing some simple visualisations and statistics
 import os
 import json
 import pandas as pd
+import matplotlib.pyplot as plt
 
 
 def load_experiment_run(data_dir):
@@ -40,7 +41,6 @@ def load_all_experiment_runs(exp_parent_dir):
         [dict] config : list of all config info for each experiment
     """
     exp_run_dirs = get_subdirectories(exp_parent_dir)
-    print(exp_run_dirs)
     data = []
     configs = []
     for run_dir in exp_run_dirs:
@@ -48,6 +48,36 @@ def load_all_experiment_runs(exp_parent_dir):
         data.append(run_data)
         configs.append(run_config)
     return data, configs
+
+
+def average_over_runs(data):
+    """
+    Averages epoch data over different runs
+    """
+    data_concat = pd.concat(data)
+    by_row_index = data_concat.groupby(data_concat.index)
+    avg_data = by_row_index.mean()
+    err_data = by_row_index.std()
+    print(err_data)
+    return avg_data, err_data
+
+
+def plot_data(config, df, x_key, y_key, err_df=None):
+    """
+    Plots data on 2D plot
+    """
+    x = df[x_key]
+    y = df[y_key]
+    err = err_df[y_key]
+
+    plt.plot(x, y)
+    if err is not None:
+        plt.fill_between(x, y - err, y + err, alpha=0.5)
+    plt.xlabel("epoch")
+    plt.ylabel("average return")
+    plt.title(config["exp_name"])
+
+    plt.show()
 
 
 def get_subdirectories(parent_dir):
@@ -67,12 +97,5 @@ if __name__ == "__main__":
 
     print("\nAnalyser")
     data, configs = load_all_experiment_runs(args.exp_dir)
-
-    for df, cfg in zip(data, configs):
-        print("\n", "-"*60, "\n")
-        print("\nConfig:")
-        for k, v in cfg.items():
-            print("\t{}: {}".format(k, v))
-        print("\nData:")
-        print(df.head(5))
-        print("\n", "-"*60, "\n")
+    avg_data, err_data = average_over_runs(data)
+    plot_data(configs[0], avg_data, "epoch", "avg_return", err_data)

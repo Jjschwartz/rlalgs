@@ -4,13 +4,13 @@ Implementation of Vanilla Policy Gradient Deep RL algorithm.abs
 Based off of OpenAI spinning up tutorial.
 """
 import gym
+import time
 import numpy as np
 import tensorflow as tf
-import rlalgs.utils.utils as utils
-import rlalgs.utils.logger as log
-from rlalgs.vpg.core import mlp_actor_critic
 import rlalgs.vpg.core as core
-import time
+import rlalgs.utils.logger as log
+import rlalgs.utils.utils as utils
+from rlalgs.vpg.core import mlp_actor_critic
 
 # Just disables the warning, doesn't enable AVX/FMA
 import os

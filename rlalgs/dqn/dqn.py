@@ -12,14 +12,14 @@ Features of the DQN paper (for atari):
 - trained for 10 million frames
 """
 import gym
-import time
 import sys
-from gym.spaces import Discrete
-import tensorflow as tf
+import time
 import numpy as np
-import rlalgs.utils.utils as utils
+import tensorflow as tf
 import rlalgs.dqn.core as core
+from gym.spaces import Discrete
 import rlalgs.utils.logger as log
+import rlalgs.utils.utils as utils
 
 # Just disables the warning, doesn't enable AVX/FMA
 import os

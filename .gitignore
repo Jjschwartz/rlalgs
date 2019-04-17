@@ -3,8 +3,12 @@ rlalgs\.egg-info/
 
 *.pyc
 
+*/__pycache__/
+
 rlalgs/data/
 
 rlalgs/dqn/output/
 
 rlalgs/vpg/vpg_tune/
+
+rlalgs/vpg/vpg_rand_tune/

@@ -1,9 +1,9 @@
 """
 Core functions for use with Vanilla Policy Gradient (VPG) implementation
 """
+import scipy.signal
 import tensorflow as tf
 import rlalgs.utils.utils as utils
-import scipy.signal
 from gym.spaces import Box, Discrete
 
 
