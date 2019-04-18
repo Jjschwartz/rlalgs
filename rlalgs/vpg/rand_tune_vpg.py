@@ -14,31 +14,19 @@ HYPERPARAMS = {
 }
 
 
-def get_hparam_arg_dicts(hparam):
-    """ Create kwargs dicts for each value of hparam
-        using default values of all other hparams """
-    hparam_dicts = []
-    for v in HYPERPARAMS[hparam][1]:
-        args = {}
-        args[hparam] = v
-        for p, v_list in HYPERPARAMS.items():
-            if p != hparam:
-                args[p] = v[0]
-        hparam_dicts.append(args)
-    return hparam_dicts
-
-
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", type=str, default='CartPole-v0')
-    parser.add_argument("--num_trials", type=int, default=5)
     parser.add_argument("--num_exps", type=int, default=16)
+    parser.add_argument("--epochs", type=int, default=25)
+    parser.add_argument("--num_trials", type=int, default=5)
+    parser.add_argument("--metric", type=str, default="cum_return")
     args = parser.parse_args()
 
-    tuner = RandomTuner(args.num_exps, name="VPG_"+args.env, seeds=args.num_trials)
+    tuner = RandomTuner(args.num_exps, name="VPG_"+args.env, seeds=args.num_trials, metric=args.metric)
     tuner.add('env_name', args.env)
-    tuner.add('epochs', 50)
+    tuner.add('epochs', args.epochs)
 
     for k, v in HYPERPARAMS.items():
         if callable(v):

@@ -115,7 +115,7 @@ class Logger:
         """
         self.output_dir = DEFAULT_DIR if output_dir is None else output_dir
         if osp.exists(self.output_dir):
-            print("Warning: Log dir %s already exists, but storing there anyway ;)")
+            print("Warning: Log dir {} already exists, but storing there anyway ;)".format(self.output_dir))
         else:
             os.makedirs(self.output_dir)
         self.output_fname = osp.join(self.output_dir, output_fname)

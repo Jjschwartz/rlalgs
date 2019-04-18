@@ -4,8 +4,7 @@ Random Search based Hyperparameter optimization class
 Based heavily off of OpenAI spinningup ExperimentGrid class
 """
 import numpy as np
-from prettytable import PrettyTable
-from rlalgs.experiments.tuner import Tuner, LINE_WIDTH
+from rlalgs.experiments.tuner import Tuner
 
 
 class RandomTuner(Tuner):
@@ -17,40 +16,15 @@ class RandomTuner(Tuner):
     from the provided options each time.
     """
 
-    def __init__(self, num_exps, name='', seeds=[0], verbose=False):
+    def __init__(self, num_exps, name='', seeds=[0], verbose=False, metric="cum_return"):
         """
         Initialize an empty random search hyperparameter tuner with given name
 
         Arguments:
             int num_exps : number of different experiment runs to conduct
-            str name : name for the experiment. This is used when naming files
-            int or list seeds : the seeds to use for runs.
-                If it is a scalar this is taken to be the number of runs and so will use all seeds
-                up to scalar
-            bool verbose : whether to print detailed messages while training (True) or not (False)
         """
-        super().__init__(name, seeds, verbose)
+        super().__init__(name, seeds, verbose, metric)
         self.num_exps = num_exps
-
-    def print_info(self):
-        """
-        Prints a message containing details of tuner (i.e. current hyperparameters and their values)
-        """
-        print("\n", "-"*LINE_WIDTH, "\n")
-        print("Random Search Hyperparameter Tuner Info:")
-        table = PrettyTable()
-        table.title = "Tuner - {}".format(self.name)
-        headers = ["key", "values", "shorthand", "default"]
-        table.field_names = headers
-        for k, v, s, d in zip(self.keys, self.vals, self.shs, self.default_vals):
-            v_print = 'dist' if callable(v) else v
-            d_print = 'dist' if callable(d) else d
-            table.add_row([k, v_print, s, d_print])
-
-        print("\n", table, "\n")
-        print("Seeds: {}".format(self.seeds))
-        print("Total number of experiments, ignoring seeds: {}".format(self.num_exps))
-        print("Total number of experiments, including seeds: {}\n".format(self.num_exps * len(self.seeds)))
 
     def add_dist(self, key, dist, shorthand=None, default=None):
         """
@@ -75,42 +49,30 @@ class RandomTuner(Tuner):
         self.shs.append(shorthand)
         self.default_vals.append(dist if default is None else default)
 
-    def run(self, algo, num_cpu=1, data_dir=None):
+    def _run(self, algo, num_cpu=1, data_dir=None):
         """
         Run each variant in the grid with algorithm
         """
-        self.print_info()
-
         # construct all variants at start since np.random.seed is set each time algo is run
         # which messes with random sampling
         variants = []
-        joined_var_names = ""
         for i in range(self.num_exps):
             var = self.sample_next_variant()
             var_name = self.name_variant(var)
             variants.append((var_name, var))
-            joined_var_names += ("\n" + var_name)
 
-        print("-"*LINE_WIDTH)
-        print("\nPreparing to run following experiments:")
-        print(joined_var_names)
-        print("\n" + "-"*LINE_WIDTH)
-
-        results = {}
+        results = []
         exp_num = 1
         for var_name, var in variants:
-            print("\n{} experiment {} of {}".format(self.name, exp_num, self.num_exps))
-            print("\n" + "-"*LINE_WIDTH)
+            print("{}\n{} experiment {} of {}".format(self.thick_line, self.name, exp_num, num_exps))
             var_result = self._run_variant(var_name, var, algo, num_cpu=num_cpu, data_dir=data_dir)
-            results[var_name] = (var, var_result)
+            results.append(var_result)
             exp_num += 1
 
-        print("\n" + "-"*LINE_WIDTH)
-        print("\nFinal results:")
-        for var_name, (var, var_result) in results.items():
-            print("\n\t{}:".format(var_name))
-            for metric, val in var_result.items():
-                print("\t\t{}: {:.3f}".format(metric, val))
+            print("{} experiment complete".format(var_name))
+            print("\nExperiment Results:")
+            self.print_results([var_result])
+            print(self.thick_line)
 
         return results
 
@@ -126,6 +88,9 @@ class RandomTuner(Tuner):
                 sampled_val = np.random.choice(v)
             variant[k] = sampled_val
         return variant
+
+    def get_num_exps(self):
+        return self.num_exps
 
 
 if __name__ == "__main__":

@@ -14,20 +14,6 @@ HYPERPARAMS = {
 }
 
 
-def get_hparam_arg_dicts(hparam):
-    """ Create kwargs dicts for each value of hparam
-        using default values of all other hparams """
-    hparam_dicts = []
-    for v in HYPERPARAMS[hparam][1]:
-        args = {}
-        args[hparam] = v
-        for p, v_list in HYPERPARAMS.items():
-            if p != hparam:
-                args[p] = v[0]
-        hparam_dicts.append(args)
-    return hparam_dicts
-
-
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()

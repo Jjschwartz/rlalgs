@@ -7,12 +7,13 @@ Implementes abstract base class for hyperparameter search, which is extended by 
 classes
 """
 import numpy as np
+import os.path as osp
 from prettytable import PrettyTable
 from rlalgs.utils.mpi import mpi_fork
 from rlalgs.utils.logger import setup_logger_kwargs
 
 
-LINE_WIDTH = 60
+LINE_WIDTH = 80
 
 
 def call_experiment(exp_name, algo, seed=0, num_cpu=1, data_dir=None, verbose=False, **kwargs):
@@ -58,8 +59,7 @@ def call_experiment(exp_name, algo, seed=0, num_cpu=1, data_dir=None, verbose=Fa
     # print end of experiment message
     logger_kwargs = kwargs['logger_kwargs']
     print("\nEnd of Experiment.\n")
-    print("Results available in {}\n\n".format(logger_kwargs['output_dir']))
-    print("-"*LINE_WIDTH)
+    print("Results available in {}".format(logger_kwargs['output_dir']))
 
     return results
 
@@ -69,10 +69,12 @@ class Tuner:
     Abstract base class for specific hyperparam search algorithms
 
     Subclasses must implement:
-    - run
+    - _run
     """
+    line = "\n" + "-"*LINE_WIDTH + "\n"
+    thick_line = "\n" + "="*LINE_WIDTH + "\n"
 
-    def __init__(self, name='', seeds=[0], verbose=False):
+    def __init__(self, name='', seeds=[0], verbose=False, metric="cum_return"):
         """
         Init an empty hyperparam tuner with given name
 
@@ -82,6 +84,8 @@ class Tuner:
                 If it is a scalar this is taken to be the number of runs and so will use all seeds
                 up to scalar
             bool verbose : whether to print detailed messages while training (True) or not (False)
+            str metric : metric to be sort results by.
+                This should match the key of the metric returned by the algorithm being tuned.
         """
         assert isinstance(name, str), "Name has to be string"
         assert isinstance(seeds, (list, int)), "Seeds must be a int or list of ints"
@@ -91,6 +95,7 @@ class Tuner:
         self.default_vals = []
         self.shs = []
         self.verbose = verbose
+        self.metric = metric
 
         if isinstance(seeds, int):
             self.seeds = list(range(seeds))
@@ -112,6 +117,14 @@ class Tuner:
         Returns:
             dict results : the performance of each variant
         """
+        self.print_info()
+        results = self._run(algo, num_cpu, data_dir)
+        sorted_results = self.sort_results(results, self.metric)
+        self.print_results(sorted_results)
+        self.write_results(sorted_results)
+        return sorted_results
+
+    def _run(self, algo, num_cpu=1, data_dir=None):
         raise NotImplementedError
 
     def add(self, key, vals, shorthand=None, default=None):
@@ -160,21 +173,74 @@ class Tuner:
         """
         Prints a message containing details of tuner (i.e. current hyperparameters and their values)
         """
-        print("\n", "-"*LINE_WIDTH, "\n")
-        print("Hyperparameter Tuner Info:")
+        print(self.thick_line)
+        print("{} Info:".format(self.__class__.__name__))
         table = PrettyTable()
         table.title = "Tuner - {}".format(self.name)
         headers = ["key", "values", "shorthand", "default"]
         table.field_names = headers
         for k, v, s, d in zip(self.keys, self.vals, self.shs, self.default_vals):
-            table.add_row([k, v, s, d])
+            v_print = 'dist' if callable(v) else v
+            d_print = 'dist' if callable(d) else d
+            table.add_row([k, v_print, s, d_print])
 
-        num_variants = int(np.prod([len(v) for v in self.vals]))
+        num_exps = self.get_num_exps()
 
         print("\n", table, "\n")
         print("Seeds: {}".format(self.seeds))
-        print("Total number of variants, ignoring seeds: {}".format(num_variants))
-        print("Total number of variants, including seeds: {}\n".format(num_variants * len(self.seeds)))
+        print("Performance metric used: \'{}\'".format(self.metric))
+        print("Total number of variants, ignoring seeds: {}".format(num_exps))
+        print("Total number of variants, including seeds: {}".format(num_exps * len(self.seeds)))
+        print(self.thick_line)
+
+    def get_num_exps(self):
+        """
+        Returns total number of experiments, not including seeds, that will be run
+        """
+        return int(np.prod([len(v) for v in self.vals]))
+
+    def print_results(self, results):
+        """
+        Prints results in a nice table
+
+        Arguments:
+            list results : list of variant experiment result dicts
+        """
+        table = PrettyTable()
+        table.title = "Final results for all experiments"
+        any_res = results[0]
+        headers = list(any_res.keys())
+        table.field_names = headers
+        for var_result in results:
+            row = []
+            for k in headers:
+                row.append(var_result[k])
+            table.add_row(row)
+        print("\n{}\n".format(table))
+
+    def write_results(self, results, data_dir):
+        """
+        Writes results to file
+
+        Arguments:
+            list results : list of variant experiment result dicts
+            str data_dir : directory to store data, if None uses current working directory
+        """
+        output_fname = self.name + "_results.txt"
+        if data_dir is not None:
+            output_fname = osp.join(data_dir, output_fname)
+
+        headers = list(results[0].keys())
+        header_row = "\t".join(headers) + "\n"
+        with open(output_fname, "w") as fout:
+            fout.write(header_row)
+            for var_result in results:
+                row = []
+                for k in headers:
+                    v = var_result[k]
+                    vstr = "%.3g" % v if isinstance(v, float) else str(v)
+                    row.append(vstr)
+                fout.write("\t".join(row) + "\n")
 
     def name_variant(self, variant):
         """
@@ -209,27 +275,33 @@ class Tuner:
     def _run_variant(self, exp_name, variant, algo, num_cpu=1, data_dir=None):
         """
         Runs a single hyperparameter setting variant with algo for each seed.
+
+        Returns:
+            dict result_struct : dictionary containing exp name, variant info and results
         """
         trial_num = 1
         trial_results = []
         for seed in self.seeds:
-            print("\n{} Running trial {} of {}".format(">>>", trial_num, len(self.seeds)))
-            print("\n" + "-"*LINE_WIDTH)
+            print("{}\n{} Running trial {} of {}".format(self.line, ">>>", trial_num, len(self.seeds)))
             variant["seed"] = seed
             var_result = call_experiment(exp_name, algo, num_cpu=num_cpu, data_dir=data_dir,
                                          verbose=self.verbose, **variant)
             trial_results.append(var_result)
             trial_num += 1
+        print(self.line)
 
         results = self._analyse_trial_results(trial_results)
+        result_struct = {"exp_name": exp_name}
+        result_struct.update(variant)
+        result_struct.update(results)
+        return result_struct
 
-        print("\n" + "-"*LINE_WIDTH)
-        print("\nExperiment {} complete\n".format(exp_name))
-        for k, v in results.items():
-            print("\t{}: {:.3f}".format(k, v))
-        print("\n" + "-"*LINE_WIDTH)
-
-        return results
+    def sort_results(self, results, metric):
+        """
+        Sorts results by a given metric
+        """
+        sorted_results = sorted(results, key=lambda k: k[metric], reverse=True)
+        return sorted_results
 
     def _analyse_trial_results(self, trial_results):
         """

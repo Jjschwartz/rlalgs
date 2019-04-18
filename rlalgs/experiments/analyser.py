@@ -58,7 +58,6 @@ def average_over_runs(data):
     by_row_index = data_concat.groupby(data_concat.index)
     avg_data = by_row_index.mean()
     err_data = by_row_index.std()
-    print(err_data)
     return avg_data, err_data
 
 

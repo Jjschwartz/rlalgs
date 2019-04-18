@@ -12,3 +12,5 @@ rlalgs/dqn/output/
 rlalgs/vpg/vpg_tune/
 
 rlalgs/vpg/vpg_rand_tune/
+
+rlalgs/vpg/vpg_greedy_tune/
