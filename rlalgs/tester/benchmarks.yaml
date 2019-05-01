@@ -17,6 +17,9 @@ envs:
   CarRacing-v0:
     trials: 100
     reward: 900.0
+  FrozenLake-v0:
+    trials: 100
+    reward: 0.78
   FrozenLake8x8-v0:
     trials: 100
-    reward: 1
+    reward: 0.99

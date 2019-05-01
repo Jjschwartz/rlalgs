@@ -2,7 +2,22 @@
 
 Algorithms are tested against known benchmarks.
 
-## Test cases for algorithms
+Two type of tests for each algorithm:
+1. Simple tests
+  - Involve testing in simple environments with known benchmarks (listed below)
+  - Can the algorithm solve the simple tasks
+2. Complex tests
+  - Test algorithm on complex environments used in literature for the given algorithm
+  - Information pertaining to environments and performance are documented within each algorithms package folder
+
+## Simple environment test cases
+
+Testing process (move onto next step if step fails):
+1. Run algorithm using default parameters
+  - 50 epochs
+2. Either:
+  1. Run for longer if learning progressing but not reaching solveable level
+  2. Tune using Random search
 
 ### Continuous observation and discrete actions
 
@@ -40,6 +55,11 @@ Easiest control task from pixels.
 *Highscore*: Solved in 900 episodes
 
 ### Discrete observation and actions
+
+###### FrozenLake-v0
+
+*Solved*: Average reward ==1 over 100 consecutive trials
+*Highscore*: NA
 
 ###### FrozenLake8x8-v0
 

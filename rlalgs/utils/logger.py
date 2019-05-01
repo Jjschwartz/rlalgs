@@ -53,21 +53,6 @@ def setup_logger_kwargs(exp_name, data_dir=None, seed=None, verbose=True):
     return dict(output_dir=output_dir, exp_name=exp_name, verbose=verbose)
 
 
-def save_model(sess, output_dir, env, inputs, outputs):
-    model_dir = osp.join(output_dir, "simple_save")
-    if osp.exists(model_dir):
-        shutil.rmtree(model_dir)
-    saver = tf.train.Saver()
-    saver.save(sess, osp.join(model_dir, "model"))
-
-    info_file = open(osp.join(model_dir, "exp_info.pkl"), "wb")
-    info = {"env": env.spec.id,
-            "inputs": {k: v.name for k, v in inputs.items()},
-            "outputs": {k: v.name for k, v in outputs.items()}}
-    pickle.dump(info, info_file)
-    info_file.close()
-
-
 def restore_model(sess, model_dir):
     saver = tf.train.import_meta_graph(osp.join(model_dir, "model" + ".meta"))
     saver.restore(sess, osp.join(model_dir, "model"))
@@ -149,6 +134,40 @@ class Logger:
         with open(osp.join(self.output_dir, "config.json"), "w") as out:
             json.dump(config_json, out, separators=(',', ':\t'), indent=2, sort_keys=True)
 
+    def save_model(self, itr=None):
+        """
+        Save the current model.
+
+        If itr is not None saves model to new directory, otherwise rewrites old saved model if one
+        exists.
+        """
+        assert hasattr(self, "tf_saver_elements"), \
+            "First have to setup model saving with self.setup_tf_model_saver, before saving model"
+        saver = tf.train.Saver()
+        sess = self.tf_saver_elements["session"]
+        base_model_dir = self.tf_saver_elements["base_model_dir"]
+        model_dir = base_model_dir if itr is None else base_model_dir + str(itr)
+        if osp.exists(model_dir):
+            shutil.rmtree(model_dir)
+        # save model
+        saver.save(sess, osp.join(model_dir, "model"))
+        # save model info
+        info_file = open(osp.join(model_dir, "exp_info.pkl"), "wb")
+        pickle.dump(self.tf_model_info, info_file)
+        info_file.close()
+
+    def setup_tf_model_saver(self, sess, env, inputs, outputs):
+        """
+        Set up model saver info
+
+        This should be called before save_model.
+        """
+        base_model_dir = osp.join(self.output_dir, "simple_save")
+        self.tf_saver_elements = dict(session=sess, base_model_dir=base_model_dir)
+        self.tf_model_info = {'env': env.spec.id,
+                              "inputs": {k: v.name for k, v in inputs.items()},
+                              "outputs": {k: v.name for k, v in outputs.items()}}
+
     def log_tabular(self, key, value):
         """
         Log value of some diagnostic
@@ -174,7 +193,7 @@ class Logger:
         Write all stored diagnostic-value pairs to output file and stdout, and clear buffer.
         """
         if not self.verbose:
-            if "epoch" in self.headers:
+            if "epoch" in self.headers and self.log_current_row["epoch"] % 10 == 0:
                 print("epoch: {}".format(self.log_current_row["epoch"]))
 
         vals = []

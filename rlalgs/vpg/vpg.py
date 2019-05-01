@@ -17,6 +17,18 @@ import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 
+def preprocess_image(image):
+    """
+    preprocess 210x160x3 uint8 frame into 6400 (80x80) 1D float vector
+    """
+    image = image[35:195]     # crop
+    image = image[::2, ::2, 0]  # downsample by factor of 2
+    image[image == 144] = 0   # erase background (background type 1)
+    image[image == 109] = 0   # erase background (background type 2)
+    image[image != 0] = 1     # everything else (paddles, ball) just set to 1
+    return image.astype(np.float).ravel()
+
+
 class VPGReplayBuffer:
     """
     A buffer for VPG storing trajectories (o, a, r, v)
@@ -125,8 +137,9 @@ class VPGReplayBuffer:
         return self.ptr
 
 
-def vpg(env_fn, hidden_sizes=[64], pi_lr=1e-2, v_lr=1e-3, gamma=0.995, epochs=50,
-        batch_size=5000, seed=0, render=False, render_last=False, logger_kwargs=dict()):
+def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs=50,
+        batch_size=5000, seed=0, render=False, render_last=False, logger_kwargs=dict(),
+        save_freq=10, overwrite_save=True):
     """
     Vanilla Policy Gradient
 
@@ -141,6 +154,8 @@ def vpg(env_fn, hidden_sizes=[64], pi_lr=1e-2, v_lr=1e-3, gamma=0.995, epochs=50
     render : whether to render environment or not
     render_last : whether to render environment after final epoch
     logger_kwargs : dictionary of keyword arguments for logger
+    save_freq : number of epochs between model saves (always atleast saves at end of training)
+    overwrite_save : whether to overwrite last saved model or save in new dir
     """
     tf.reset_default_graph()
     tf.set_random_seed(seed)
@@ -150,10 +165,12 @@ def vpg(env_fn, hidden_sizes=[64], pi_lr=1e-2, v_lr=1e-3, gamma=0.995, epochs=50
     logger.save_config(locals())
 
     env = env_fn()
-    obs_dim = utils.get_dim_from_space(env.observation_space)
+    # obs_dim = utils.get_dim_from_space(env.observation_space)
+    obs_dim = 80*80
     act_dim = env.action_space.shape
 
-    obs_ph = utils.placeholder_from_space(env.observation_space, True, log.OBS_NAME)
+    # obs_ph = utils.placeholder_from_space(env.observation_space, True, log.OBS_NAME)
+    obs_ph = tf.placeholder(tf.float32, shape=(None, obs_dim))
     act_ph = utils.placeholder_from_space(env.action_space)
     ret_ph = tf.placeholder(tf.float32, shape=(None, ))
     adv_ph = tf.placeholder(tf.float32, shape=(None, ))
@@ -170,6 +187,8 @@ def vpg(env_fn, hidden_sizes=[64], pi_lr=1e-2, v_lr=1e-3, gamma=0.995, epochs=50
     sess = tf.Session()
     sess.run(tf.global_variables_initializer())
 
+    logger.setup_tf_model_saver(sess, env, {log.OBS_NAME: obs_ph}, {log.ACTS_NAME: pi})
+
     def train_one_epoch():
         o, r, d = env.reset(), 0, False
         finished_rendering_this_epoch = False
@@ -181,7 +200,8 @@ def vpg(env_fn, hidden_sizes=[64], pi_lr=1e-2, v_lr=1e-3, gamma=0.995, epochs=50
             if not finished_rendering_this_epoch and render:
                 env.render()
 
-            o = utils.process_obs(o, env.observation_space)
+            o = preprocess_image(o)
+            # o = utils.process_obs(o, env.observation_space)
 
             a, v_t = sess.run([pi, v], {obs_ph: o.reshape(1, -1)})
             buf.store(o, a[0], r, v_t[0])
@@ -197,7 +217,8 @@ def vpg(env_fn, hidden_sizes=[64], pi_lr=1e-2, v_lr=1e-3, gamma=0.995, epochs=50
                 if d:
                     last_val = r
                 else:
-                    o = utils.process_obs(o, env.observation_space)
+                    o = preprocess_image(o)
+                    # o = utils.process_obs(o, env.observation_space)
                     last_val = sess.run(v, {obs_ph: o.reshape(1, -1)})
                 buf.finish_path(last_val)
 
@@ -223,25 +244,29 @@ def vpg(env_fn, hidden_sizes=[64], pi_lr=1e-2, v_lr=1e-3, gamma=0.995, epochs=50
 
     total_epoch_times = 0
     avg_epoch_returns = []
+    total_episodes = 0
     for i in range(epochs):
         epoch_start = time.time()
         results = train_one_epoch()
         epoch_time = time.time() - epoch_start
         total_epoch_times += epoch_time
         avg_return = np.mean(results[2])
+        total_episodes += len(results[3])
         logger.log_tabular("epoch", i)
         logger.log_tabular("pi_loss", results[0])
         logger.log_tabular("v_loss", results[1])
         logger.log_tabular("avg_return", avg_return)
         logger.log_tabular("avg_ep_lens", np.mean(results[3]))
+        logger.log_tabular("total_eps", total_episodes)
         logger.log_tabular("epoch_time", epoch_time)
         avg_epoch_returns.append(avg_return)
         logger.dump_tabular()
 
-    print("Average epoch time = ", total_epoch_times/epochs)
+        if (save_freq != 0 and i % save_freq == 0) or i == epochs-1:
+            itr = None if overwrite_save else i
+            logger.save_model(itr)
 
-    log.save_model(sess, logger_kwargs["output_dir"], env, {log.OBS_NAME: obs_ph},
-                   {log.ACTS_NAME: pi})
+    print("Average epoch time = ", total_epoch_times/epochs)
 
     if render_last:
         input("Press enter to view final policy in action")
@@ -250,8 +275,10 @@ def vpg(env_fn, hidden_sizes=[64], pi_lr=1e-2, v_lr=1e-3, gamma=0.995, epochs=50
         finished_rendering_this_epoch = False
         while not finished_rendering_this_epoch:
             env.render()
-            a = sess.run(pi, {obs_ph: o.reshape(1, -1)})[0]
-            o, r, d, _ = env.step(a)
+            o = preprocess_image(o)
+            # o = utils.process_obs(o, env.observation_space)
+            a = sess.run(pi, {obs_ph: o.reshape(1, -1)})
+            o, r, d, _ = env.step(a[0])
             final_ret += r
             if d:
                 finished_rendering_this_epoch = True
@@ -264,13 +291,16 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", type=str, default='CartPole-v0')
+    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--batch_size", type=int, default=5000)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--hid", type=int, default=64)
+    parser.add_argument("--layers", type=int, default=2)
+    parser.add_argument("--pi_lr", type=float, default=0.01)
+    parser.add_argument("--v_lr", type=float, default=0.01)
+    parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--render", action="store_true")
     parser.add_argument("--renderlast", action="store_true")
-    parser.add_argument("--pi_lr", type=float, default=1e-2)
-    parser.add_argument("--v_lr", type=float, default=1e-3)
-    parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--exp_name", type=str, default=None)
     args = parser.parse_args()
 
@@ -278,6 +308,7 @@ if __name__ == "__main__":
     logger_kwargs = log.setup_logger_kwargs(exp_name, seed=args.seed)
 
     print("\nVanilla Policy Gradient")
-    vpg(lambda: gym.make(args.env), epochs=args.epochs, pi_lr=args.pi_lr, v_lr=args.v_lr,
-        gamma=args.gamma, seed=args.seed, render=args.render, render_last=args.renderlast,
-        logger_kwargs=logger_kwargs)
+    vpg(lambda: gym.make(args.env), epochs=args.epochs, batch_size=args.batch_size,
+        hidden_sizes=[args.hid]*args.layers, pi_lr=args.pi_lr, v_lr=args.v_lr, gamma=args.gamma,
+        seed=args.seed, render=args.render, render_last=args.renderlast,
+        logger_kwargs=logger_kwargs, save_freq=2, overwrite_save=False)

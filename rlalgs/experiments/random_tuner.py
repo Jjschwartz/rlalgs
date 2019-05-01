@@ -64,7 +64,7 @@ class RandomTuner(Tuner):
         results = []
         exp_num = 1
         for var_name, var in variants:
-            print("{}\n{} experiment {} of {}".format(self.thick_line, self.name, exp_num, num_exps))
+            print("{}\n{} experiment {} of {}".format(self.thick_line, self.name, exp_num, self.num_exps))
             var_result = self._run_variant(var_name, var, algo, num_cpu=num_cpu, data_dir=data_dir)
             results.append(var_result)
             exp_num += 1
