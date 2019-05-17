@@ -74,6 +74,8 @@ class Tuner:
     line = "\n" + "-"*LINE_WIDTH + "\n"
     thick_line = "\n" + "="*LINE_WIDTH + "\n"
 
+    valid_metrics = ["cum_return", "final_return", "mean_var"]
+
     def __init__(self, name='', seeds=[0], verbose=False, metric="cum_return"):
         """
         Init an empty hyperparam tuner with given name
@@ -89,6 +91,7 @@ class Tuner:
         """
         assert isinstance(name, str), "Name has to be string"
         assert isinstance(seeds, (list, int)), "Seeds must be a int or list of ints"
+        assert metric in self.valid_metrics, "Metric must be in {}".format(self.valid_metrics)
         self.name = name
         self.keys = []
         self.vals = []
@@ -310,8 +313,9 @@ class Tuner:
         Expects "avg_epoch_returns" to be in trial_results
 
         Specifically, extracts:
-            1. final return = average trajectory return of last epoch
-            2. average cumulative return = total average epoch return
+            1. final_return = average trajectory return of last epoch
+            2. cum_return = cumulative sum of average epoch returns
+            3. mean_var = mean(returns) - std(returns)
         """
         avg_results = self._average_trial_results(trial_results)
 
@@ -319,6 +323,7 @@ class Tuner:
         avg_epoch_returns = avg_results['avg_epoch_returns']
         results['final_return'] = avg_epoch_returns[-1]
         results['cum_return'] = np.sum(avg_epoch_returns)
+        results['mean_var'] = np.mean(avg_epoch_returns) - np.std(avg_epoch_returns)
         return results
 
     def _average_trial_results(self, trial_results):

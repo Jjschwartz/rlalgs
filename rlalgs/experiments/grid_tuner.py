@@ -13,7 +13,7 @@ class GridTuner(Tuner):
     grid search.
     """
 
-    def __init__(self, name='', seeds=[0], verbose=False, metric="cum_return"):
+    def __init__(self, name='', seeds=[0], verbose=False, metric="mean_var"):
         """
         Init an empty grid search hyperparameter tuner with given name
         """
