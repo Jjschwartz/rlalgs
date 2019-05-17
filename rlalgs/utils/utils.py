@@ -59,15 +59,6 @@ def combined_shape(length, shape=None):
         return (length, *shape)     # noqa: E999
 
 
-def process_obs(o, obs_space):
-    """
-    Process an observation based on the observation space type
-    """
-    if isinstance(obs_space, Discrete):
-        return np.eye(obs_space.n)[o]
-    return o
-
-
 def reward_to_go(rews):
     """
     Calculate the reward-to-go return for each step in a given episode

@@ -20,6 +20,7 @@ import rlalgs.dqn.core as core
 from gym.spaces import Discrete
 import rlalgs.utils.logger as log
 import rlalgs.utils.utils as utils
+import rlalgs.utils.preprocess as preprocess
 
 # Just disables the warning, doesn't enable AVX/FMA
 import os
@@ -69,9 +70,10 @@ class DQNReplayBuffer:
                 "d": self.done_buf[sample_idxs]}
 
 
-def dqn(env_fn, hidden_sizes=[64], lr=1e-3, epochs=50, epoch_steps=10000, batch_size=32,
+def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, batch_size=32,
         seed=0, replay_size=10000, epsilon=0.05, gamma=0.99, start_steps=100000, render=False,
-        render_last=False, exp_name=None):
+        render_last=False, logger_kwargs=dict(), save_freq=10, overwrite_save=True,
+        preprocess_fn=None, obs_dim=None):
     """
     Deep Q-network with experience replay
 
@@ -88,25 +90,37 @@ def dqn(env_fn, hidden_sizes=[64], lr=1e-3, epochs=50, epoch_steps=10000, batch_
     start_steps : the epsilon annealing period in number of steps
     render : whether to render environment or not
     render_last : whether to render environment after final epoch
-    exp_name : name for experiment output files (if None, defaults to "dqn_envname")
+    logger_kwargs : dictionary of keyword arguments for logger
+    save_freq : number of epochs between model saves (always atleast saves at end of training)
+    overwrite_save : whether to overwrite last saved model or save in new dir
+    preprocess_fn : the preprocess function for observation. (If None then no preprocessing is
+        done apart for handling reshaping for discrete observation spaces)
+    obs_dim : dimensions for observations (if None then dimensions extracted from environment
+        observation space)
     """
+    tf.reset_default_graph()
     tf.set_random_seed(seed)
     np.random.seed(seed)
 
     env = env_fn()
     if not isinstance(env.action_space, Discrete):
-        raise NotImplementedError("Deep Q-network only works for environments with Discrete " +
-                                  "action spaces")
-    obs_dim = utils.get_dim_from_space(env.observation_space)
+        raise NotImplementedError("DQN only works for environments with Discrete action spaces")
+
+    logger = log.Logger(**logger_kwargs)
+    logger.save_config(locals())
+
+    if preprocess_fn is None:
+        preprocess_fn = preprocess.preprocess_obs
+
+    if obs_dim is None:
+        obs_dim = utils.get_dim_from_space(env.observation_space)
+        obs_ph = utils.placeholder_from_space(env.observation_space, obs_space=True, name=log.OBS_NAME)
+    else:
+        obs_ph = tf.placeholder(tf.float32, shape=(None, obs_dim))
+
     # need .shape for replay buffer and #actions for random action sampling
     act_dim = env.action_space.shape
     num_actions = utils.get_dim_from_space(env.action_space)
-
-    output_name = "dqn_" + env.spec.id if exp_name is None else exp_name
-    logger = log.Logger(output_fname=output_name + ".txt")
-
-    obs_ph = utils.placeholder_from_space(env.observation_space, obs_space=True,
-                                          name=log.OBS_NAME)
     act_ph = utils.placeholder_from_space(env.action_space)
     rew_ph = tf.placeholder(tf.float32, shape=(None, ))
     obs_prime_ph = utils.placeholder_from_space(env.observation_space, obs_space=True)
@@ -144,6 +158,8 @@ def dqn(env_fn, hidden_sizes=[64], lr=1e-3, epochs=50, epoch_steps=10000, batch_
     sess.run(tf.global_variables_initializer())
     sess.run(target_init)
 
+    logger.setup_tf_model_saver(sess, env, {log.OBS_NAME: obs_ph}, {log.ACTS_NAME: pi})
+
     def get_action(o):
         global total_t
         eps = epsilon if total_t >= start_steps else epsilon_schedule[total_t]
@@ -153,7 +169,7 @@ def dqn(env_fn, hidden_sizes=[64], lr=1e-3, epochs=50, epoch_steps=10000, batch_
         if np.random.rand(1) < eps:
             a = np.random.choice(num_actions)
         else:
-            o_processed = utils.process_obs(o, env.observation_space)
+            o_processed = preprocess_fn(o, env)
             a = sess.run(pi, {obs_ph: o_processed.reshape(1, -1)})
         return a
 

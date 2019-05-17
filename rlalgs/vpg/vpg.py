@@ -10,23 +10,12 @@ import tensorflow as tf
 import rlalgs.vpg.core as core
 import rlalgs.utils.logger as log
 import rlalgs.utils.utils as utils
+import rlalgs.utils.preprocess as preprocess
 from rlalgs.vpg.core import mlp_actor_critic
 
 # Just disables the warning, doesn't enable AVX/FMA
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-
-
-def preprocess_image(image):
-    """
-    preprocess 210x160x3 uint8 frame into 6400 (80x80) 1D float vector
-    """
-    image = image[35:195]     # crop
-    image = image[::2, ::2, 0]  # downsample by factor of 2
-    image[image == 144] = 0   # erase background (background type 1)
-    image[image == 109] = 0   # erase background (background type 2)
-    image[image != 0] = 1     # everything else (paddles, ball) just set to 1
-    return image.astype(np.float).ravel()
 
 
 class VPGReplayBuffer:
@@ -35,8 +24,8 @@ class VPGReplayBuffer:
     """
     valid_fns = ["simple", "adv", "gae"]
 
-    def __init__(self, obs_dim, act_dim, buffer_size, gamma=0.99, lmbda=0.97,
-                 adv_fn="simple"):
+    def __init__(self, obs_dim, act_dim, buffer_size, gamma=0.99, lmbda=0.95,
+                 adv_fn="gae"):
         """
         Init an empty buffer
 
@@ -139,7 +128,7 @@ class VPGReplayBuffer:
 
 def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs=50,
         batch_size=5000, seed=0, render=False, render_last=False, logger_kwargs=dict(),
-        save_freq=10, overwrite_save=True):
+        save_freq=10, overwrite_save=True, preprocess_fn=None, obs_dim=None):
     """
     Vanilla Policy Gradient
 
@@ -156,6 +145,10 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
     logger_kwargs : dictionary of keyword arguments for logger
     save_freq : number of epochs between model saves (always atleast saves at end of training)
     overwrite_save : whether to overwrite last saved model or save in new dir
+    preprocess_fn : the preprocess function for observation. (If None then no preprocessing is
+        done apart for handling reshaping for discrete observation spaces)
+    obs_dim : dimensions for observations (if None then dimensions extracted from environment
+        observation space)
     """
     tf.reset_default_graph()
     tf.set_random_seed(seed)
@@ -165,12 +158,17 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
     logger.save_config(locals())
 
     env = env_fn()
-    # obs_dim = utils.get_dim_from_space(env.observation_space)
-    obs_dim = 80*80
-    act_dim = env.action_space.shape
 
-    # obs_ph = utils.placeholder_from_space(env.observation_space, True, log.OBS_NAME)
-    obs_ph = tf.placeholder(tf.float32, shape=(None, obs_dim))
+    if preprocess_fn is None:
+        preprocess_fn = preprocess.preprocess_obs
+
+    if obs_dim is None:
+        obs_dim = utils.get_dim_from_space(env.observation_space)
+        obs_ph = utils.placeholder_from_space(env.observation_space, True)
+    else:
+        obs_ph = tf.placeholder(tf.float32, shape=(None, obs_dim))
+
+    act_dim = env.action_space.shape
     act_ph = utils.placeholder_from_space(env.action_space)
     ret_ph = tf.placeholder(tf.float32, shape=(None, ))
     adv_ph = tf.placeholder(tf.float32, shape=(None, ))
@@ -200,8 +198,7 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
             if not finished_rendering_this_epoch and render:
                 env.render()
 
-            o = preprocess_image(o)
-            # o = utils.process_obs(o, env.observation_space)
+            o = preprocess_fn(o, env)
 
             a, v_t = sess.run([pi, v], {obs_ph: o.reshape(1, -1)})
             buf.store(o, a[0], r, v_t[0])
@@ -217,8 +214,7 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
                 if d:
                     last_val = r
                 else:
-                    o = preprocess_image(o)
-                    # o = utils.process_obs(o, env.observation_space)
+                    o = preprocess_fn(o, env)
                     last_val = sess.run(v, {obs_ph: o.reshape(1, -1)})
                 buf.finish_path(last_val)
 
@@ -234,8 +230,8 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
         inputs = {obs_ph: np.array(batch_obs),
                   act_ph: np.array(batch_acts),
                   adv_ph: np.array(batch_adv),
-                  ret_ph: np.array(batch_rets),
-                  }
+                  ret_ph: np.array(batch_rets)}
+
         pi_l, v_l = sess.run([pi_loss, v_loss], feed_dict=inputs)
         sess.run(pi_train_op, feed_dict=inputs)
         sess.run(v_train_op, feed_dict=inputs)
@@ -275,8 +271,7 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
         finished_rendering_this_epoch = False
         while not finished_rendering_this_epoch:
             env.render()
-            o = preprocess_image(o)
-            # o = utils.process_obs(o, env.observation_space)
+            o = preprocess_fn(o, env)
             a = sess.run(pi, {obs_ph: o.reshape(1, -1)})
             o, r, d, _ = env.step(a[0])
             final_ret += r

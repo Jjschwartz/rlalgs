@@ -3,6 +3,7 @@ Functionallity for testing implementations and trained models against some
 standard benchmarks
 """
 import gym
+import time
 import tensorflow as tf
 import rlalgs.utils.utils as utils
 import rlalgs.utils.logger as logger
@@ -13,7 +14,7 @@ import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 
-def run_episode(sess, env, x, pi):
+def run_episode(sess, env, x, pi, render):
     """
     Runs a single episode of the given environment for a model
 
@@ -28,12 +29,18 @@ def run_episode(sess, env, x, pi):
     """
     epRew = 0
     o, r, d = env.reset(), 0, False
+    t = 0
     while not d:
-        o = utils.process_obs(o, env.observation_space)
+        if render:
+            env.render()
+            time.sleep(0.01)
+        # o = utils.process_obs(o, env.observation_space)
+        o = utils.process_pong_image(o)
         a = sess.run(pi, {x: o.reshape(1, -1)})
         o, r, d, _ = env.step(a[0])
         epRew += r
-    return epRew
+        t += 1
+    return epRew, t
 
 
 def load_model(fpath):
@@ -61,6 +68,7 @@ if __name__ == "__main__":
     parser.add_argument("fpath", metavar='fpath', type=str,
                         help="saved model directory name (i.e. the simple_save folder)")
     parser.add_argument("--trials", type=int, default=100)
+    parser.add_argument("--render", action="store_true")
     args = parser.parse_args()
 
     env_name = logger.get_env_name(args.fpath)
@@ -76,8 +84,8 @@ if __name__ == "__main__":
 
     total_rew = 0
     for i in range(trials):
-        ep_rew = run_episode(sess, env, x, pi)
-        print("Trial {}: \t total reward = {}".format(i, ep_rew))
+        ep_rew, t = run_episode(sess, env, x, pi, args.render)
+        print("Trial {}: \t total reward = {}, total steps = {}".format(i, ep_rew, t))
         total_rew += ep_rew
 
     print("-" * 20, "\n")
