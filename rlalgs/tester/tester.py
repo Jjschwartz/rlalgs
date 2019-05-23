@@ -5,16 +5,16 @@ standard benchmarks
 import gym
 import time
 import tensorflow as tf
-import rlalgs.utils.utils as utils
 import rlalgs.utils.logger as logger
 import rlalgs.tester.utils as testutils
+import rlalgs.utils.preprocess as preprocess
 
 # Just disables the warning, doesn't enable AVX/FMA
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 
-def run_episode(sess, env, x, pi, render):
+def run_episode(sess, env, x, pi, render, preprocess_fn):
     """
     Runs a single episode of the given environment for a model
 
@@ -34,10 +34,14 @@ def run_episode(sess, env, x, pi, render):
         if render:
             env.render()
             time.sleep(0.01)
-        # o = utils.process_obs(o, env.observation_space)
-        o = utils.process_pong_image(o)
+        o = preprocess_fn(o, env)
         a = sess.run(pi, {x: o.reshape(1, -1)})
-        o, r, d, _ = env.step(a[0])
+        try:
+            a_processed = a[0]
+        except IndexError:
+            # some algs return action directly (i.e. argmax(Q-val) for Q-learning)
+            a_processed = a
+        o, r, d, _ = env.step(a_processed)
         epRew += r
         t += 1
     return epRew, t
@@ -81,10 +85,11 @@ if __name__ == "__main__":
     env = gym.make(env_name)
 
     sess, x, pi = load_model(args.fpath)
+    preprocess_fn, _ = preprocess.get_preprocess_fn(env_name)
 
     total_rew = 0
     for i in range(trials):
-        ep_rew, t = run_episode(sess, env, x, pi, args.render)
+        ep_rew, t = run_episode(sess, env, x, pi, args.render, preprocess_fn)
         print("Trial {}: \t total reward = {}, total steps = {}".format(i, ep_rew, t))
         total_rew += ep_rew
 

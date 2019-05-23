@@ -6,7 +6,7 @@ from rlalgs.utils.preprocess import preprocess_pong_image
 
 env = "Pong-v0"
 training_steps = int(4e7)
-batch_size = 8000       # > average complete episode length
+batch_size = 5000       # > average complete episode length
 epochs = int(training_steps/batch_size)
 exp_name = "vpg_pong"
 seed = 30
@@ -16,8 +16,8 @@ params = {
     "epochs": epochs,
     "batch_size": batch_size,
     "hidden_sizes": [100, 50, 25],
-    "pi_lr": 0.0003,        # the karpathy constant
-    "v_lr": 0.0003,
+    "pi_lr": 0.0007,        # the karpathy constant
+    "v_lr": 0.0007,
     "gamma": 0.99,
     "seed": seed,
     "render": False,

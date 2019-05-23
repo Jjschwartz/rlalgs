@@ -4,7 +4,6 @@ Synchronous Advantage Actor-Critic (A2C) implementation
 import time
 import gym as gym
 import numpy as np
-from mpi4py import MPI
 import tensorflow as tf
 import rlalgs.utils.mpi as mpi
 import rlalgs.a2c.core as core
@@ -31,7 +30,9 @@ class ReplayBuffer:
         self.lam = lam
 
     def store(self, o, a, r, v):
-        """ Store a single step in buffer """
+        """
+        Store a single step in buffer
+        """
         assert self.ptr < self.max_size
         self.obs_buf[self.ptr] = o
         self.act_buf[self.ptr] = a
@@ -40,8 +41,10 @@ class ReplayBuffer:
         self.ptr += 1
 
     def finish_path(self):
-        """ Calculate and store returns and advantage for finished episode trajectory
-            Using GAE """
+        """
+        Calculate and store returns and advantage for finished episode trajectory
+        Using GAE.
+        """
         path_slice = slice(self.path_start_idx, self.ptr)
         ep_rews = self.rew_buf[path_slice]
         # final episode step value = 0 if done, else v(st+1) = r_terminal
@@ -109,7 +112,6 @@ def a2c(env_fn, epochs=50, steps_per_epoch=4000, hidden_sizes=[64], pi_lr=3e-4,
 
     # 9. Sync all params across processes
     sess.run(mpi.sync_all_params())
-    # END just fucking around
 
     def get_action(o):
         a, v_t = sess.run([pi, v], {obs_ph: o.reshape(1, -1)})
