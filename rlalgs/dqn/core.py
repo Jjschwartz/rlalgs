@@ -26,7 +26,7 @@ def mlp(x, output_size, hidden_sizes=[64], activation=tf.tanh, output_activation
         output_size : number of neurons in output layer
         hidden_sizes : ordered list of size of each hidden layer
         activation : tf activation function for hidden layers
-        output_activation : tf activation function for output layer or None if no activation
+        output_activation : tf activation function for output layer or None for linear activation
 
     Returns:
         y : output layer as tf tensor

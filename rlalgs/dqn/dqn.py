@@ -1,18 +1,7 @@
 """
 Deep Q-Network implementation using tensorflow
-
-Replicates the original DQN paper by Mnih et al (2013) as close as possible
-
-Features of the DQN paper (for atari):
-- Experience replay
-    - capacity of one million most recent frames
-- Used Convulutional neural net
-- Minibatch size of 32
-- Epsilon annealed from 1 to 0.1 over first 1 million frames
-- trained for 10 million frames
 """
 import gym
-import sys
 import time
 import numpy as np
 import tensorflow as tf
@@ -72,7 +61,7 @@ class DQNReplayBuffer:
 
 def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, batch_size=32,
         seed=0, replay_size=100000, epsilon=0.05, gamma=0.99, polyak=0.995, start_steps=100000,
-        target_update_freq=10000, render=False, render_last=False, logger_kwargs=dict(), save_freq=10,
+        target_update_freq=1, render=False, render_last=False, logger_kwargs=dict(), save_freq=10,
         overwrite_save=True, preprocess_fn=None, obs_dim=None):
     """
     Deep Q-network with experience replay
@@ -90,8 +79,10 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
     epsilon : random action selection parameter
     gamma : discount parameter
     polyak : Interpolation factor when copying target network towards main network.
+        (set to 0.0 if wanting to use n-step target network updating)
     start_steps : the epsilon annealing period in number of steps
     target_update_freq : number of steps between target network updates
+        (should be one if using polyak averaging or <= epoch_steps for n-step updating)
     render : whether to render environment or not
     render_last : whether to render environment after final epoch
     logger_kwargs : dictionary of keyword arguments for logger
@@ -102,16 +93,19 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
     obs_dim : dimensions for observations (if None then dimensions extracted from environment
         observation space)
     """
+    assert target_update_freq <= epoch_steps, \
+        "must have target_update_freq <= epoch_steps, else no learning will be done.."
+
     tf.reset_default_graph()
     tf.set_random_seed(seed)
     np.random.seed(seed)
 
+    logger = log.Logger(**logger_kwargs)
+    logger.save_config(locals())
+
     env = env_fn()
     if not isinstance(env.action_space, Discrete):
         raise NotImplementedError("DQN only works for environments with Discrete action spaces")
-
-    logger = log.Logger(**logger_kwargs)
-    logger.save_config(locals())
 
     if preprocess_fn is None:
         preprocess_fn = preprocess.preprocess_obs
@@ -189,10 +183,24 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
 
         batch_loss, _ = sess.run([q_loss, q_train_op], feed_dict)
 
-        if t > 0 and t % target_update_freq == 0:
+        if t > 0 and (target_update_freq == 1 or t % (target_update_freq-1) == 0):
+            if t == epoch_steps-1:
+                logger.log_tabular("network_diff", network_diff())
             sess.run(target_update)
 
         return batch_loss
+
+    def network_diff():
+        """ Calculates difference between networks """
+        main_var = core.get_vars('main')
+        target_var = core.get_vars('target')
+        total_diff = 0
+        for m, t in zip(main_var, target_var):
+            m_val = m.eval(sess)
+            t_val = t.eval(sess)
+            diff = np.sum(np.abs(m_val - t_val))
+            total_diff += diff
+        return total_diff
 
     def train_one_epoch():
         o, r, d = env.reset(), 0, False
@@ -246,7 +254,7 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
         total_epoch_times += epoch_time
         total_episodes += len(results[2])
         logger.log_tabular("epoch", i)
-        logger.log_tabular("pi_loss", np.mean(results[0]))
+        logger.log_tabular("q_loss", np.mean(results[0]))
         logger.log_tabular("avg_return", np.mean(results[1]))
         logger.log_tabular("avg_ep_lens", np.mean(results[2]))
         logger.log_tabular("total_eps", total_episodes)
@@ -255,7 +263,7 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
         logger.log_tabular("epoch_time", epoch_time)
 
         for j, ds in enumerate(debug_states):
-            q = sess.run([q_pi], {obs_ph: ds.reshape(1, -1)})
+            q = sess.run(q_pi, {obs_ph: ds.reshape(1, -1)})
             logger.log_tabular("q_" + str(j), q[0])
 
         logger.dump_tabular()
@@ -274,7 +282,7 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
         while not finished_rendering_this_epoch:
             env.render()
             o = preprocess_fn(o, env)
-            a = sess.run(pi, {obs_ph: o.reshape(1, -1)})[0]
+            a = sess.run(pi, {obs_ph: o.reshape(1, -1)})
             o, r, d, _ = env.step(a)
             final_ret += r
             if d:
@@ -290,13 +298,14 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--epoch_steps", type=int, default=10000)
-    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--replay_size", type=int, default=10000)
-    parser.add_argument("--epsilon", type=float, default=0.05)
+    parser.add_argument("--replay_size", type=int, default=100000)
+    parser.add_argument("--epsilon", type=float, default=0.01)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--polyak", type=float, default=0.995)
     parser.add_argument("--start_steps", type=int, default=100000)
+    parser.add_argument("--target_update_freq", type=int, default=1)
     parser.add_argument("--render", action="store_true")
     parser.add_argument("--renderlast", action="store_true")
     parser.add_argument("--exp_name", type=str, default=None)
@@ -311,6 +320,6 @@ if __name__ == "__main__":
     dqn(lambda: gym.make(args.env), hidden_sizes=args.hidden_sizes, lr=args.lr,
         epochs=args.epochs, epoch_steps=args.epoch_steps, batch_size=args.batch_size,
         seed=args.seed, replay_size=args.replay_size, epsilon=args.epsilon, gamma=args.gamma,
-        polyak=args.polyak, start_steps=args.start_steps, render=args.render,
-        render_last=args.renderlast, logger_kwargs=logger_kwargs, preprocess_fn=preprocess_fn,
-        obs_dim=obs_dim)
+        polyak=args.polyak, start_steps=args.start_steps, target_update_freq=args.target_update_freq,
+        render=args.render, render_last=args.renderlast, logger_kwargs=logger_kwargs,
+        preprocess_fn=preprocess_fn, obs_dim=obs_dim)

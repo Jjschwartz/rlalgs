@@ -1,3 +1,16 @@
+"""
+Replicates the original DQN papers as close as possible:
+- OG paper: Mnih et al (2013)
+- with target network: Mnih et al (2015)
+
+Features of the DQN paper (for atari):
+- Experience replay
+    - capacity of one million most recent frames
+- Used Convulutional neural net
+- Minibatch size of 32
+- Epsilon annealed from 1 to 0.1 over first 1 million frames
+- trained for 10 million frames
+"""
 import gym
 import time
 from rlalgs.dqn.dqn import dqn
@@ -6,7 +19,7 @@ from rlalgs.utils.preprocess import preprocess_pong_image
 
 env = "Pong-v0"
 training_steps = int(5e7)   # from atari paper (50 million frames)
-epoch_steps = 10000         # atari paper goes by frames so this is kinda arbitrary
+epoch_steps = 10000         # set to be same as target_update_freq
 epochs = int(training_steps/epoch_steps)
 exp_name = "dqn_pong"
 seed = 30
@@ -22,7 +35,7 @@ params = {
     "replay_size": 1000000,     # from atari paper
     "epsilon": 0.1,     # from atari paper
     "gamma": 0.99,      # from atari paper
-    "polyak": 0.995,     # from ddpg spinningup implementation
+    "polyak": 0.0,     # c-step update from atari paper (i.e. not polyak updating as in spinningup)
     "start_steps": 1000000,     # from atari paper
     "target_update_freq": 10000,    # from atari paper
     "render": False,

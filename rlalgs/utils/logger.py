@@ -104,7 +104,7 @@ class Logger:
         else:
             os.makedirs(self.output_dir)
         self.output_fname = osp.join(self.output_dir, output_fname)
-        self.output_file = open(self.output_fname, "w")
+        self.output_file = open(self.output_fname, "w", buffering=1)
         # closes file when module exits
         atexit.register(self.output_file.close)
         self.first_row = True
