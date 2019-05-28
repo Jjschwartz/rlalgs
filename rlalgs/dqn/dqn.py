@@ -274,6 +274,9 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
             itr = None if overwrite_save else i
             logger.save_model(itr)
 
+        training_time_left = utils.training_time_left(i, epochs, epoch_time)
+        print("Training time remaining = {}".format(training_time_left))
+
     print("Average epoch time = ", total_epoch_times/epochs)
 
     if render_last:

@@ -2,6 +2,7 @@
 Common general functions used by algorithm implementations
 """
 import psutil
+import datetime
 import numpy as np
 import scipy.signal
 import tensorflow as tf
@@ -199,3 +200,20 @@ def print_current_mem_usage():
     print("\n" + "-" * len(output))
     print(output)
     print("-" * len(output) + "\n")
+
+
+def training_time_left(current_epoch, total_epochs, epoch_time):
+    """
+    Get predicted remaining time for training
+
+    Arguments:
+        int current_epoch : current epoch number
+        int total_epochs : total number of training epochs
+        float epoch_time : time required for a single epoch, in seconds
+
+    Returns:
+        str time_rem : the training time remaining as hour:min:sec format
+    """
+    epochs_rem = total_epochs - current_epoch - 1
+    time_rem = epochs_rem * epoch_time
+    return str(datetime.timedelta(seconds=time_rem))
