@@ -1,9 +1,10 @@
 """
-An analyser class that collates data from experimental runs and runs a sime analysis on it.
-Providing some simple visualisations and statistics
+An analyser class that collates data from experimental runs and provides some simple
+visualisations and statistics
 """
 import os
 import json
+import math
 import pandas as pd
 import matplotlib.pyplot as plt
 
@@ -50,6 +51,17 @@ def load_all_experiment_runs(exp_parent_dir):
     return data, configs
 
 
+def get_subdirectories(parent_dir):
+    """
+    Get all subdirectories of parent
+    """
+    sub_dirs = []
+    for name in os.listdir(parent_dir):
+        if os.path.isdir(os.path.join(parent_dir, name)):
+            sub_dirs.append(os.path.join(parent_dir, name))
+    return sub_dirs
+
+
 def average_over_runs(data):
     """
     Averages epoch data over different runs
@@ -61,7 +73,14 @@ def average_over_runs(data):
     return avg_data, err_data
 
 
-def plot_data(config, df, x_key, y_key, err_df=None):
+def get_fig_grid_dims(num_plots):
+    plts_sqrt = math.sqrt(num_plots)
+    rows = round(plts_sqrt)
+    cols = math.ceil(plts_sqrt)
+    return rows, cols
+
+
+def plot_data(ax, df, x_key, y_key, err_df=None):
     """
     Plots data on 2D plot
     """
@@ -69,23 +88,12 @@ def plot_data(config, df, x_key, y_key, err_df=None):
     y = df[y_key]
     err = err_df[y_key]
 
-    plt.plot(x, y)
+    ax.plot(x, y)
     if err is not None:
-        plt.fill_between(x, y - err, y + err, alpha=0.5)
-    plt.xlabel("epoch")
-    plt.ylabel("average return")
-    plt.title(config["exp_name"])
-
-    plt.show()
-
-
-def get_subdirectories(parent_dir):
-    """ Get all subdirectories of parent """
-    sub_dirs = []
-    for name in os.listdir(parent_dir):
-        if os.path.isdir(os.path.join(parent_dir, name)):
-            sub_dirs.append(os.path.join(parent_dir, name))
-    return sub_dirs
+        ax.fill_between(x, y - err, y + err, alpha=0.5)
+    ax.set_xlabel(x_key)
+    ax.set_ylabel(y_key)
+    # ax.set_title("{}".format(y_key))
 
 
 if __name__ == "__main__":
@@ -97,4 +105,21 @@ if __name__ == "__main__":
     print("\nAnalyser")
     data, configs = load_all_experiment_runs(args.exp_dir)
     avg_data, err_data = average_over_runs(data)
-    plot_data(configs[0], avg_data, "epoch", "avg_return", err_data)
+
+    x_key = "epoch"
+    headers = list(avg_data)
+    num_plots = len(headers) - 1
+    rows, cols = get_fig_grid_dims(num_plots)
+
+    fig, axes = plt.subplots(rows, cols)
+    r, c = 0, 0
+    for y_key in headers:
+        if y_key != x_key:
+            ax = axes[r][c]
+            plot_data(ax, avg_data, x_key, y_key, err_data)
+            if c + 1 == cols:
+                r += 1
+            c = (c + 1) % cols
+
+    fig.suptitle(configs[0]["exp_name"])
+    plt.show()
