@@ -22,7 +22,7 @@ training_steps = int(5e7)   # from atari paper (50 million frames)
 epoch_steps = 10000         # set to be same as target_update_freq
 epochs = int(training_steps/epoch_steps)
 exp_name = "dqn_pong"
-seed = 30
+seed = 40
 logger_kwargs = setup_logger_kwargs(exp_name, seed=seed)
 
 params = {
@@ -47,7 +47,7 @@ params = {
     "obs_dim": 80*80
 }
 
-print("\nStarting Pong training using VPG")
+print("\nStarting Pong training using DQN")
 start_time = time.time()
 print("Start time = {}\n".format(start_time))
 dqn(lambda: gym.make(env), **params)
