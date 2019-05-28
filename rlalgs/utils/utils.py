@@ -1,6 +1,7 @@
 """
 Common general functions used by algorithm implementations
 """
+import psutil
 import numpy as np
 import scipy.signal
 import tensorflow as tf
@@ -179,3 +180,22 @@ def gaussian_likelihood(x, mu, log_std):
     std = tf.exp(log_std)
     pre_sum = tf.square((x - mu)/std) + 2*log_std + np.log(2*np.pi)
     return -0.5 * tf.reduce_sum(pre_sum, axis=1)
+
+
+def get_current_mem_usage():
+    """
+    Gets the current memory usage of calling process in MiB
+    """
+    process = psutil.Process()
+    return process.memory_info().rss / float(2**20)
+
+
+def print_current_mem_usage():
+    """
+    Prints memory usage of current process to stdout
+    """
+    mem = get_current_mem_usage()
+    output = "# Mem usage = {} MiB #".format(mem)
+    print("\n" + "-" * len(output))
+    print(output)
+    print("-" * len(output) + "\n")

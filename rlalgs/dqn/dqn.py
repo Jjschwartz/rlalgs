@@ -163,10 +163,8 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
     num_debug_states = 4
     debug_states = []
 
-    def get_action(o):
-        global total_t
-        eps = epsilon if total_t >= start_steps else epsilon_schedule[total_t]
-        total_t += 1
+    def get_action(o, t):
+        eps = epsilon if t >= start_steps else epsilon_schedule[t]
         if np.random.rand(1) < eps:
             a = np.random.choice(num_actions)
         else:
@@ -203,6 +201,7 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
         return total_diff
 
     def train_one_epoch():
+        global total_t
         o, r, d = env.reset(), 0, False
         finished_rendering_this_epoch = False
         ep_len, ep_ret, ep_loss = 0, 0, []
@@ -218,7 +217,7 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
                 if np.random.rand(1) < 0.1:
                     debug_states.append(o)
 
-            a = get_action(o)
+            a = get_action(o, total_t)
             o_prime, r, d, _ = env.step(a)
             o_prime = preprocess_fn(o_prime, env)
             buf.store(o, a, r, o_prime, d)
@@ -227,6 +226,7 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
             ep_len += 1
             ep_ret += r
             t += 1
+            total_t += 1
             ep_loss.append(batch_loss)
             o = o_prime
 
@@ -241,6 +241,7 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
                 ep_len, ep_ret, ep_loss = 0, 0, []
 
             if t >= epoch_steps:
+                epoch_ep_lens.append(ep_len)
                 break
 
         return epoch_ep_loss, epoch_ep_rets, epoch_ep_lens
@@ -248,12 +249,12 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
     total_epoch_times = 0
     total_episodes = 0
     for i in range(epochs):
+        logger.log_tabular("epoch", i)
         epoch_start = time.time()
         results = train_one_epoch()
         epoch_time = time.time() - epoch_start
         total_epoch_times += epoch_time
         total_episodes += len(results[2])
-        logger.log_tabular("epoch", i)
         logger.log_tabular("q_loss", np.mean(results[0]))
         logger.log_tabular("avg_return", np.mean(results[1]))
         logger.log_tabular("avg_ep_lens", np.mean(results[2]))
@@ -261,6 +262,7 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
         logger.log_tabular("total_steps", np.sum(results[2]))
         logger.log_tabular("end_epsilon", epsilon if total_t >= start_steps else epsilon_schedule[total_t])
         logger.log_tabular("epoch_time", epoch_time)
+        logger.log_tabular("mem_usage", utils.get_current_mem_usage())
 
         for j, ds in enumerate(debug_states):
             q = sess.run(q_pi, {obs_ph: ds.reshape(1, -1)})

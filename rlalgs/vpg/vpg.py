@@ -255,6 +255,7 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
         logger.log_tabular("avg_ep_lens", np.mean(results[3]))
         logger.log_tabular("total_eps", total_episodes)
         logger.log_tabular("epoch_time", epoch_time)
+        logger.log_tabular("mem_usage", utils.get_current_mem_usage())
         avg_epoch_returns.append(avg_return)
         logger.dump_tabular()
 

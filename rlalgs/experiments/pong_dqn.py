@@ -22,7 +22,7 @@ training_steps = int(5e7)   # from atari paper (50 million frames)
 epoch_steps = 10000         # set to be same as target_update_freq
 epochs = int(training_steps/epoch_steps)
 exp_name = "dqn_pong"
-seed = 40
+seed = 50
 logger_kwargs = setup_logger_kwargs(exp_name, seed=seed)
 
 params = {
@@ -32,7 +32,8 @@ params = {
     "epoch_steps": epoch_steps,
     "batch_size": 32,   # from atari paper
     "seed": seed,
-    "replay_size": 1000000,     # from atari paper
+    # "replay_size": 1000000,     # from atari paper
+    "replay_size": 200000,     # OG size is too big for memory, so have to use smaller size
     "epsilon": 0.1,     # from atari paper
     "gamma": 0.99,      # from atari paper
     "polyak": 0.0,     # c-step update from atari paper (i.e. not polyak updating as in spinningup)
