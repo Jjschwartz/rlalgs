@@ -11,20 +11,13 @@ Reports statistics on:
 
 Usage:
 
-    python plot.py path/to/data/file.txt [--smooth_period n]
+    python plot.py path/to/data/file.txt [--smooth n]
 
 """
-import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
 LINE = "\n" + "-" * 60 + "\n"
-
-
-def smooth(y, period):
-    box = np.ones(period)/period
-    y_smooth = np.convolve(y, box, mode='same')
-    return y_smooth
 
 
 def plot(file_path, smooth_period):
@@ -37,8 +30,9 @@ def plot(file_path, smooth_period):
     epoch_times = df["epoch_time"]
 
     num_epochs = x.count()
-    y_smooth = smooth(y, smooth_period)
-    rolling_std = y.rolling(smooth_period, min_periods=1).std()
+    y_smooth = y.rolling(smooth_period, min_periods=1)
+    y_smooth_mean = y_smooth.mean()
+    y_rolling_std = y_smooth.std()
     training_time = epoch_times.sum()
 
     print(LINE)
@@ -73,9 +67,8 @@ def plot(file_path, smooth_period):
     print("\tStandard dev: {:.3f} secs".format(epoch_times.std()))
     print(LINE)
 
-    # plt.plot(x, y)
-    plt.plot(x, y_smooth)
-    plt.fill_between(x, y_smooth-rolling_std, y_smooth+rolling_std, alpha=0.5)
+    plt.plot(x, y_smooth_mean)
+    plt.fill_between(x, y_smooth_mean-y_rolling_std, y_smooth_mean+y_rolling_std, alpha=0.5)
     plt.xlabel("epoch")
     plt.ylabel("average return")
     plt.title(file_path.split("/")[-1])
@@ -88,11 +81,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('file', metavar='file', type=str,
                         help='path to logger output file')
-    parser.add_argument('--smooth_period', type=int, default=1,
+    parser.add_argument('--smooth', type=int, default=1,
                         help='Number of epochs to smooth returns over')
     args = parser.parse_args()
 
     print("\nResults plotter")
     print("Plotting results from {}".format(args.file))
-    print("Using smoothing period of {}".format(args.smooth_period))
-    plot(args.file, args.smooth_period)
+    print("Using smoothing period of {}".format(args.smooth))
+    plot(args.file, args.smooth)
