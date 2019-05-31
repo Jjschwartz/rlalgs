@@ -1,21 +1,46 @@
 """
 A module for running multiple training runs with different seeds in parallel.
 
+Note: each run/seed is run using a single CPU so cannot handle multiple runs of parallel
+algorithms (e.g. a2c).
+
 Functionallity:
 - Inputs:
-    1. algorithms
-    2. algorithm arguments, including environment
-    3. seed/s
-    4. number of runs
-    5. number of cpus
-    6. experiment name
+    1. An YAML file defining what's to be run, including:
+        1. name of algorithm
+        2. algorith arguments and hyperparams, including environment
+    2. number of cpus (this will control number of simoultaneuos runs)
+        - the cpu rank will also be
+    3. experiment name
 - Outputs:
     - results of running algorithm using algorithm arguments with different seeds the specified
     number of runs using the specified number of cpus
 """
+import yaml
+import rlalgs   # noqa
 import rlalgs.utils.mpi as mpi
 import rlalgs.utils.logger as log
+from rlalgs.algos import VALID_ALGOS
 import rlalgs.utils.preprocess as preprocess
+
+
+def load_exp(exp_file):
+    """
+    Loads an experiment from a experiment file
+    """
+    with open(exp_file) as fin:
+        exp = yaml.load(fin, Loader=yaml.FullLoader)
+
+    assert exp["algo"] in VALID_ALGOS, f"exp_file algo can only be one of {VALID_ALGOS}"
+    algo = eval("rlalgs."+exp["algo"])
+
+    env = exp["env"]
+    
+
+
+
+    return content
+
 
 
 def run_alg(alg_fn, alg_args, seed, exp_name):

@@ -13,7 +13,7 @@ Features of the DQN paper (for atari):
 """
 import gym
 import time
-from rlalgs.algos.dqn.dqn import dqn
+from rlalgs import dqn
 from rlalgs.utils.logger import setup_logger_kwargs
 from rlalgs.utils.preprocess import preprocess_pong_image
 

@@ -1,0 +1,3 @@
+# experiment definition for CartPole using DQN, using default params
+algo: dqn
+env: "CartPole-v0"
