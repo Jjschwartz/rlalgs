@@ -1,14 +1,14 @@
 """
 Greedy Search Hyperparameter tuning for VPG
 """
-from rlalgs.vpg.vpg import vpg
-from rlalgs.experiments.greedy_tuner import GreedyTuner
+from rlalgs.algos.vpg.vpg import vpg
+from rlalgs.tuner.greedy_tuner import GreedyTuner
 
 
 HYPERPARAMS = {
-     "pi_lr": (0.01, [0.1, 0.01, 0.001]),
-     "v_lr": (0.01, [0.1, 0.01, 0.001]),
-     "hidden_sizes": ([64, 64], [[32], [64], [256], [64, 64], [100, 50, 25], [400, 300]])
+    "pi_lr": (0.01, [0.1, 0.01, 0.001]),
+    "v_lr": (0.01, [0.1, 0.01, 0.001]),
+    "hidden_sizes": ([64, 64], [[32], [64], [256], [64, 64], [100, 50, 25], [400, 300]])
 }
 
 

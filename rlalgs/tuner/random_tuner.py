@@ -4,7 +4,7 @@ Random Search based Hyperparameter optimization class
 Based heavily off of OpenAI spinningup ExperimentGrid class
 """
 import numpy as np
-from rlalgs.experiments.tuner import Tuner
+from rlalgs.tuner.tuner import Tuner
 
 
 class RandomTuner(Tuner):

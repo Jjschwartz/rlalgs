@@ -4,7 +4,7 @@ Grid Search based hyperparameter optimization class
 Based heavily off of OpenAI spinningup ExperimentGrid class
 """
 import copy
-from rlalgs.experiments.tuner import Tuner
+from rlalgs.tuner.tuner import Tuner
 
 
 class GridTuner(Tuner):

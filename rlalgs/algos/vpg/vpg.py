@@ -7,11 +7,11 @@ import gym
 import time
 import numpy as np
 import tensorflow as tf
-import rlalgs.vpg.core as core
 import rlalgs.utils.logger as log
 import rlalgs.utils.utils as utils
+import rlalgs.algos.vpg.core as core
 import rlalgs.utils.preprocess as preprocess
-from rlalgs.vpg.core import mlp_actor_critic
+from rlalgs.algos.vpg.core import mlp_actor_critic
 
 # Just disables the warning, doesn't enable AVX/FMA
 import os

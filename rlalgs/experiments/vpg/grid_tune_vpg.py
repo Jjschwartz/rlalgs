@@ -2,15 +2,15 @@
 Simple module that runs algorithm for a range of hyperparams and writes
 results to file
 """
-from rlalgs.vpg.vpg import vpg
-from rlalgs.experiments.grid_tuner import GridTuner
+from rlalgs.algos.vpg.vpg import vpg
+from rlalgs.tuner.grid_tuner import GridTuner
 
 
 HYPERPARAMS = {
-     "pi_lr": (0.01, [0.1, 0.01, 0.001]),
-     "v_lr": (0.01, [0.1, 0.01, 0.001]),
-     # "gamma": (0.99, [0.9, 0.995, 1]),
-     "hidden_sizes": ([64], [[32], [64], [256], [64, 64], [100, 50, 25], [400, 300]])
+    "pi_lr": (0.01, [0.1, 0.01, 0.001]),
+    "v_lr": (0.01, [0.1, 0.01, 0.001]),
+    # "gamma": (0.99, [0.9, 0.995, 1]),
+    "hidden_sizes": ([64], [[32], [64], [256], [64, 64], [100, 50, 25], [400, 300]])
 }
 
 

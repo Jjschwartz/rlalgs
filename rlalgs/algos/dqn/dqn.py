@@ -5,7 +5,7 @@ import gym
 import time
 import numpy as np
 import tensorflow as tf
-import rlalgs.dqn.core as core
+import rlalgs.algos.dqn.core as core
 from gym.spaces import Discrete
 import rlalgs.utils.logger as log
 import rlalgs.utils.utils as utils

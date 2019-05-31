@@ -1,6 +1,6 @@
 import gym
 import time
-from rlalgs.vpg.vpg import vpg
+from rlalgs.algos.vpg.vpg import vpg
 from rlalgs.utils.logger import setup_logger_kwargs
 from rlalgs.utils.preprocess import preprocess_pong_image
 

@@ -4,13 +4,10 @@ rlalgs\.egg-info/
 *.pyc
 
 */__pycache__/
-
 rlalgs/data/
-
 rlalgs/dqn/output/
+*/vpg_tune/
+*/vpg_rand_tune/
+*/vpg_greedy_tune/
 
-rlalgs/vpg/vpg_tune/
-
-rlalgs/vpg/vpg_rand_tune/
-
-rlalgs/vpg/vpg_greedy_tune/
+rlalgs/experiments/vpg/vpg_rand_tune/

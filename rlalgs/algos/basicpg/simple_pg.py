@@ -1,5 +1,9 @@
 """
-Simplest reward-to-go policy gradient algorithm using
+Simplest policy gradient algorithm
+
+Components:
+- Policy network
+-
 
 Based off of OpenAI's spinningup implementation of policy gradient
 
@@ -8,9 +12,8 @@ N.B. some of the code is extra verbose to help with understanding
 import gym
 import numpy as np
 import tensorflow as tf
-import rlalgs.utils.logger as log
 import rlalgs.utils.utils as utils
-import rlalgs.basicpg.core as core
+import rlalgs.algos.basicpg.core as core
 from rlalgs.utils.logger import Logger
 
 # Just disables the warning, doesn't enable AVX/FMA
@@ -18,22 +21,11 @@ import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 
-def reward_to_go(rews):
+def simple_finish_path(ptr, path_start_idx, rew_buf):
     """
-    Calculate the reward-to-go return for each step in a given episode
-    """
-    n = len(rews)
-    rtgs = np.zeros_like(rews)
-    for i in reversed(range(n)):
-        rtgs[i] = rews[i] + (rtgs[i+1] if i+1 < n else 0)
-    return rtgs
-
-
-def r2g_finish_path(ptr, path_start_idx, rew_buf):
-    """
-    Simple PG return calculator using reward-to-go return, called when an episode
-    is done. The return for a given step is the sum of all rewards following that
-    step in the given episode
+    Simple PG return calculator, called when an episode is done.
+    Simply sums all returns for a given episode and sets that as the
+    return for each step.
 
     N.B. Doesn't reset the path_start_idx, this must be done outside of
     function
@@ -47,15 +39,17 @@ def r2g_finish_path(ptr, path_start_idx, rew_buf):
         ret_buf : the return buffer for the episode
     """
     path_slice = slice(path_start_idx, ptr)
+    ep_len = ptr - path_start_idx
     ep_rews = rew_buf[path_slice]
-    ret_buf = reward_to_go(ep_rews)
+    ep_ret = np.sum(ep_rews)
+    ret_buf = [ep_ret] * ep_len
     return ret_buf
 
 
-def r2gpg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
-          seed=0, render=False, render_last=False):
+def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
+             seed=0, render=False, render_last=False):
     """
-    Simple Reward-to-Go Policy Gradient
+    Simple Policy Gradient
 
     Arguments:
     ----------
@@ -68,6 +62,7 @@ def r2gpg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
     render : whether to render environment or not
     render_last : whether to render environment after final epoch
     """
+
     print("Setting seeds")
     tf.set_random_seed(seed)
     np.random.seed(seed)
@@ -76,15 +71,15 @@ def r2gpg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
     env = env_fn()
 
     print("Initializing logger")
-    logger = Logger(output_fname="r2gpg_" + env.spec.id + ".txt")
+    logger = Logger(output_fname="simple_pg" + env.spec._env_name + ".txt")
 
     print("Building network")
-    obs_ph = utils.placeholder_from_space(env.observation_space, obs_space=True, name=log.OBS_NAME)
+    obs_ph = utils.placeholder_from_space(env.observation_space, obs_space=True)
     act_ph = utils.placeholder_from_space(env.action_space)
     actions, log_probs = core.actor_critic(obs_ph, act_ph, env.action_space,
                                            hidden_sizes=hidden_sizes)
 
-    print("Building loss function")
+    print("Setup loss")
     return_ph = tf.placeholder(tf.float32, shape=(None, ))
     loss = -tf.reduce_mean(log_probs * return_ph)
 
@@ -92,7 +87,7 @@ def r2gpg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
     train_op = tf.train.AdamOptimizer(learning_rate=lr).minimize(loss)
 
     print("Initializing Replay Buffer")
-    buf = core.SimpleBuffer(r2g_finish_path)
+    buf = core.SimpleBuffer(simple_finish_path)
 
     print("Launching tf session")
     sess = tf.Session()
@@ -101,13 +96,13 @@ def r2gpg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
     def train_one_epoch():
         o, r, d = env.reset(), 0, False
         finished_rendering_this_epoch = False
-        # for progress logging
+        # for progress reporting
         ep_len, ep_ret = 0, 0
         batch_ep_lens, batch_ep_rets = [], []
 
         while True:
             # render first episode of each epoch
-            if not finished_rendering_this_epoch and render:
+            if (not finished_rendering_this_epoch) and render:
                 env.render()
             o = utils.process_obs(o, env.observation_space)
             # select action for current obs
@@ -124,12 +119,12 @@ def r2gpg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
                 o, r, d = env.reset(), 0, False
                 finished_rendering_this_epoch = True
                 batch_ep_lens.append(ep_len)
+                ep_len = 0
                 batch_ep_rets.append(ep_ret)
-                ep_len, ep_ret = 0, 0
+                ep_ret = 0
                 # finish epoch
                 if buf.size() > batch_size:
                     break
-
         # get epoch trajectories
         batch_obs, batch_acts, batch_rets = buf.get()
         # take single policy gradient update step
@@ -141,7 +136,7 @@ def r2gpg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
                                  })
         return batch_loss, batch_ep_rets, batch_ep_lens
 
-    # training loop
+    print("Starting training")
     for i in range(epochs):
         batch_loss, batch_ep_rets, batch_ep_lens = train_one_epoch()
         logger.log_tabular("epoch", i)
@@ -149,9 +144,6 @@ def r2gpg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
         logger.log_tabular("avg_return", np.mean(batch_ep_rets))
         logger.log_tabular("avg_ep_lens", np.mean(batch_ep_lens))
         logger.dump_tabular()
-
-    log.save_model(sess, "r2gpg_" + env.spec.id, env, {log.OBS_NAME: obs_ph},
-                   {log.ACTS_NAME: actions})
 
     if render_last:
         input("Press enter to view final policy in action")
@@ -179,7 +171,6 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
-    print("\nSimple Reward-to-Go Policy Gradient")
-    print("Training on the " + args.env + "environment\n")
-    r2gpg(lambda: gym.make(args.env), epochs=args.epochs, lr=args.lr,
-          seed=args.seed, render=args.render, render_last=args.renderlast)
+    print("\nSimple Policy Gradient")
+    simplepg(lambda: gym.make(args.env), epochs=args.epochs, lr=args.lr,
+             seed=args.seed, render=args.render, render_last=args.renderlast)

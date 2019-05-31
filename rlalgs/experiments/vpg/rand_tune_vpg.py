@@ -2,15 +2,15 @@
 Random Search Hyperparameter tuning for VPG
 """
 import numpy as np
-from rlalgs.vpg.vpg import vpg
-from rlalgs.experiments.random_tuner import RandomTuner
+from rlalgs.algos.vpg.vpg import vpg
+from rlalgs.tuner.random_tuner import RandomTuner
 
 
 HYPERPARAMS = {
-     "pi_lr": lambda: np.random.uniform(0.001, 0.1),
-     "v_lr": lambda: np.random.uniform(0.001, 0.1),
-     # "gamma": (0.99, [0.9, 0.995, 1]),
-     "hidden_sizes": [[32], [64], [256], [64, 64], [100, 50, 25], [400, 300]]
+    "pi_lr": lambda: np.random.uniform(0.001, 0.1),
+    "v_lr": lambda: np.random.uniform(0.001, 0.1),
+    # "gamma": (0.99, [0.9, 0.995, 1]),
+    "hidden_sizes": [[32], [64], [256], [64, 64], [100, 50, 25], [400, 300]]
 }
 
 
