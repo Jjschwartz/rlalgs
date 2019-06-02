@@ -192,12 +192,8 @@ class Logger:
         """
         Write all stored diagnostic-value pairs to output file and stdout, and clear buffer.
         """
-        if not self.verbose:
-            if "epoch" in self.headers and self.log_current_row["epoch"] % 10 == 0:
-                print("epoch: {}".format(self.log_current_row["epoch"]))
-
         vals = []
-        max_header_len = max(10, len(max(self.headers)))
+        max_header_len = max(12, len(max(self.headers)))
 
         if self.verbose:
             print("\n{}".format("-"*2*(max_header_len + 8)))

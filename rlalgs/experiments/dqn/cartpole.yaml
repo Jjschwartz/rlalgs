@@ -1,3 +1,6 @@
 # experiment definition for CartPole using DQN, using default params
 algo: dqn
 env: "CartPole-v0"
+args:
+  epochs: 5
+  hidden_sizes: [32]

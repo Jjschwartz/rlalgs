@@ -160,9 +160,6 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
 
     logger.setup_tf_model_saver(sess, env, {log.OBS_NAME: obs_ph}, {log.ACTS_NAME: pi})
 
-    num_debug_states = 4
-    debug_states = []
-
     def get_action(o, t):
         eps = epsilon if t >= start_steps else epsilon_schedule[t]
         if np.random.rand(1) < eps:
@@ -183,7 +180,7 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
 
         if t > 0 and (target_update_freq == 1 or t % (target_update_freq-1) == 0):
             if t == epoch_steps-1:
-                logger.log_tabular("network_diff", network_diff())
+                logger.log_tabular("ntwk_diff", network_diff())
             sess.run(target_update)
 
         return batch_loss
@@ -212,10 +209,6 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
         while True:
             if not finished_rendering_this_epoch and render:
                 env.render()
-
-            if len(debug_states) < num_debug_states:
-                if np.random.rand(1) < 0.1:
-                    debug_states.append(o)
 
             a = get_action(o, total_t)
             o_prime, r, d, _ = env.step(a)
@@ -264,20 +257,14 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
         logger.log_tabular("epoch_time", epoch_time)
         logger.log_tabular("mem_usage", utils.get_current_mem_usage())
 
-        for j, ds in enumerate(debug_states):
-            q = sess.run(q_pi, {obs_ph: ds.reshape(1, -1)})
-            logger.log_tabular("q_" + str(j), q[0])
+        training_time_left = utils.training_time_left(i, epochs, epoch_time)
+        logger.log_tabular("time_rem", training_time_left)
 
         logger.dump_tabular()
 
         if (save_freq != 0 and i % save_freq == 0) or i == epochs-1:
             itr = None if overwrite_save else i
             logger.save_model(itr)
-
-        training_time_left = utils.training_time_left(i, epochs, epoch_time)
-        print("Training time remaining = {}".format(training_time_left))
-
-    print("Average epoch time = ", total_epoch_times/epochs)
 
     if render_last:
         input("Press enter to view final policy in action")
