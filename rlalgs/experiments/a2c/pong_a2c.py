@@ -7,6 +7,10 @@ from rlalgs.algos.a2c.a2c import a2c
 from rlalgs.utils.logger import setup_logger_kwargs
 from rlalgs.utils.preprocess import preprocess_pong_image
 
+# Just disables the warning, doesn't enable AVX/FMA
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
 # cpu = 1
 cpu = multiprocessing.cpu_count() - 1
 
@@ -14,9 +18,8 @@ mpi.mpi_fork(cpu)
 mpi.print_msg(f"\nStarting Pong training using A2C and {cpu} processes")
 
 env = "Pong-v0"
-# training_steps = int(4e7)
-training_steps = int(4e5)
-steps_per_epoch = 5000       # > average complete episode length
+training_steps = int(4e7)
+steps_per_epoch = 5000 * cpu       # > average complete episode length
 epochs = int(training_steps/steps_per_epoch)
 exp_name = f"a2c_{env}_{cpu}"
 seed = 20
