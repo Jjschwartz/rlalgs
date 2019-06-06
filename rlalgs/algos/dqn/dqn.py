@@ -5,10 +5,10 @@ import gym
 import time
 import numpy as np
 import tensorflow as tf
-import rlalgs.algos.dqn.core as core
 from gym.spaces import Discrete
 import rlalgs.utils.logger as log
 import rlalgs.utils.utils as utils
+import rlalgs.algos.dqn.core as core
 import rlalgs.utils.preprocess as preprocess
 
 # Just disables the warning, doesn't enable AVX/FMA
@@ -256,7 +256,6 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
         logger.log_tabular("end_epsilon", epsilon if total_t >= start_steps else epsilon_schedule[total_t])
         logger.log_tabular("epoch_time", epoch_time)
         logger.log_tabular("mem_usage", utils.get_current_mem_usage())
-
         training_time_left = utils.training_time_left(i, epochs, epoch_time)
         logger.log_tabular("time_rem", training_time_left)
 

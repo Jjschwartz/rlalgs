@@ -1,14 +1,15 @@
 """
 Synchronous Advantage Actor-Critic (A2C) implementation
 """
+import gym
 import time
-import gym as gym
 import numpy as np
 import tensorflow as tf
 import rlalgs.utils.mpi as mpi
-import rlalgs.algos.a2c.core as core
+import rlalgs.utils.logger as log
 import rlalgs.utils.utils as utils
-from rlalgs.utils.logger import Logger, OBS_NAME
+import rlalgs.algos.a2c.core as core
+import rlalgs.utils.preprocess as preprocess
 
 # Just disables the warning, doesn't enable AVX/FMA
 import os
@@ -64,25 +65,53 @@ class ReplayBuffer:
         return [self.obs_buf, self.act_buf, self.ret_buf, self.adv_buf, self.val_buf]
 
 
-def a2c(env_fn, epochs=50, steps_per_epoch=4000, hidden_sizes=[64], pi_lr=3e-4,
-        vf_lr=1e-3, train_v_iters=80, gamma=0.99, seed=0, exp_name=None):
+def a2c(env_fn, hidden_sizes=[64, 64], epochs=50, steps_per_epoch=4000, pi_lr=3e-4, vf_lr=1e-3,
+        train_v_iters=80, gamma=0.99, seed=0, logger_kwargs=dict(), save_freq=10,
+        overwrite_save=True, preprocess_fn=None, obs_dim=None):
     """
     Train agent on env using A2C
 
+    Arguments
+    ----------
+    env_fn : A function which creates a copy of OpenAI Gym environment
+    hidden_sizes : list of units in each hidden layer of policy network
+    epochs : number of epochs to train for
+    steps_per_epoch : number of steps per epoch
+    pi_lr : learning rate for policy network update
+    vf_lr : learning rate for value network update
+    train_v_iters : number of value network updates per policy network update
+    gamma : discount parameter
+    seed : random seed
+    logger_kwargs : dictionary of keyword arguments for logger
+    save_freq : number of epochs between model saves (always atleast saves at end of training)
+    overwrite_save : whether to overwrite last saved model or save in new dir
+    preprocess_fn : the preprocess function for observation. (If None then no preprocessing is
+    done apart for handling reshaping for discrete observation spaces)
+    obs_dim : dimensions for observations (if None then dimensions extracted from environment
+    observation space)
     """
-    # 1. Set seeds - each process is seeded differently
     seed += 10000 * mpi.proc_id()
     tf.set_random_seed(seed)
     np.random.seed(seed)
 
+    if mpi.proc_id() == 0:
+        logger = log.Logger(**logger_kwargs)
+        logger.save_config(locals())
+
     # 2. Initialize environment
     env = env_fn()
-    obs_dim = utils.get_dim_from_space(env.observation_space)
-    act_dim = env.action_space.shape
+
+    if preprocess_fn is None:
+        preprocess_fn = preprocess.preprocess_obs
 
     # 3a. Create global network placeholders
-    obs_ph = utils.placeholder_from_space(env.observation_space, obs_space=True,
-                                          name=OBS_NAME)
+    if obs_dim is None:
+        obs_dim = utils.get_dim_from_space(env.observation_space)
+        obs_ph = utils.placeholder_from_space(env.observation_space, obs_space=True)
+    else:
+        obs_ph = tf.placeholder(tf.float32, shape=(None, obs_dim))
+
+    act_dim = env.action_space.shape
     act_ph = utils.placeholder_from_space(env.action_space)
     ret_ph = tf.placeholder(tf.float32, shape=(None, ))
     adv_ph = tf.placeholder(tf.float32, shape=(None, ))
@@ -102,16 +131,16 @@ def a2c(env_fn, epochs=50, steps_per_epoch=4000, hidden_sizes=[64], pi_lr=3e-4,
     local_steps_per_epoch = int(steps_per_epoch / mpi.num_procs())
     buf = ReplayBuffer(obs_dim, act_dim, local_steps_per_epoch)
 
-    # 7. Initialize logger
-    output_name = "a2c_" + env.spec.id if exp_name is None else exp_name
-    logger = Logger(output_fname=output_name + ".txt")
-
     # 8. Create tf session
     sess = tf.Session()
     sess.run(tf.global_variables_initializer())
 
     # 9. Sync all params across processes
     sess.run(mpi.sync_all_params())
+
+    if mpi.proc_id() == 0:
+        # only save model of one cpu
+        logger.setup_tf_model_saver(sess, env, {log.OBS_NAME: obs_ph}, {log.ACTS_NAME: pi})
 
     def get_action(o):
         a, v_t = sess.run([pi, v], {obs_ph: o.reshape(1, -1)})
@@ -141,7 +170,7 @@ def a2c(env_fn, epochs=50, steps_per_epoch=4000, hidden_sizes=[64], pi_lr=3e-4,
 
         epoch_start = time.time()
 
-        o, r, d = utils.process_obs(env.reset(), env.observation_space), 0, False
+        o, r, d = preprocess_fn(env.reset(), env), 0, False
         ep_rews, ep_steps = [], []
         ep_r, ep_t = 0, 0
 
@@ -149,7 +178,7 @@ def a2c(env_fn, epochs=50, steps_per_epoch=4000, hidden_sizes=[64], pi_lr=3e-4,
 
             a, v_t = get_action(o)
             o2, r, d, _ = env.step(a)
-            o2 = utils.process_obs(o2, env.observation_space)
+            o2 = preprocess_fn(o2, env)
 
             ep_r += r
             ep_t += 1
@@ -163,11 +192,10 @@ def a2c(env_fn, epochs=50, steps_per_epoch=4000, hidden_sizes=[64], pi_lr=3e-4,
                     ep_rews.append(ep_r)
                     ep_steps.append(ep_t)
                 ep_r, ep_t = 0, 0
-                o, r, d = utils.process_obs(env.reset(), env.observation_space), 0, d
+                o, r, d = preprocess_fn(env.reset(), env), 0, False
             else:
                 buf.store(o, a, r, v_t)
-
-            o = o2
+                o = o2
 
         epoch_pi_loss, epoch_v_loss = update()
 
@@ -181,7 +209,13 @@ def a2c(env_fn, epochs=50, steps_per_epoch=4000, hidden_sizes=[64], pi_lr=3e-4,
             logger.log_tabular("avg_ep_lens", np.mean(ep_steps))
             logger.log_tabular("epoch_time", epoch_time)
             logger.log_tabular("time", total_time)
+            training_time_left = utils.training_time_left(epoch, epochs, epoch_time)
+            logger.log_tabular("time_rem", training_time_left)
             logger.dump_tabular()
+
+            if (save_freq != 0 and epoch % save_freq == 0) or epoch == epochs-1:
+                itr = None if overwrite_save else epoch
+                logger.save_model(itr)
 
 
 if __name__ == "__main__":
@@ -189,12 +223,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", type=str, default='CartPole-v0')
     parser.add_argument("--cpu", type=int, default=4)
+    parser.add_argument("--hidden_sizes", type=int, nargs="*", default=[64, 64])
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--steps", type=int, default=4000)
-    parser.add_argument("--hid", type=int, default=64)
-    parser.add_argument("--layers", type=int, default=2)
     parser.add_argument("--pi_lr", type=float, default=1e-3)
     parser.add_argument("--vf_lr", type=float, default=1e-3)
+    parser.add_argument("--train_v_iters", type=int, default=80)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--render", action="store_true")
@@ -206,8 +240,17 @@ if __name__ == "__main__":
     mpi.mpi_fork(args.cpu)
 
     # 2. test fork
-    mpi.print_msg("Hello, World!")
+    mpi.print_msg("Running A2C!")
 
-    a2c(lambda: gym.make(args.env), epochs=args.epochs, steps_per_epoch=args.steps,
-        hidden_sizes=[args.hid]*args.layers, pi_lr=args.pi_lr, vf_lr=args.vf_lr, gamma=args.gamma,
-        seed=args.seed, exp_name=args.exp_name)
+    exp_name = f"a2c_{args.cpu}_{args.env}" if args.exp_name is None else args.exp_name
+    if mpi.proc_id() == 0:
+        logger_kwargs = log.setup_logger_kwargs(exp_name, seed=args.seed)
+    else:
+        logger_kwargs = dict()
+
+    preprocess_fn, obs_dim = preprocess.get_preprocess_fn(args.env)
+
+    a2c(lambda: gym.make(args.env), hidden_sizes=args.hidden_sizes, epochs=args.epochs,
+        steps_per_epoch=args.steps, pi_lr=args.pi_lr, vf_lr=args.vf_lr, seed=args.seed,
+        train_v_iters=args.train_v_iters, gamma=args.gamma, logger_kwargs=logger_kwargs,
+        preprocess_fn=preprocess_fn, obs_dim=obs_dim)
