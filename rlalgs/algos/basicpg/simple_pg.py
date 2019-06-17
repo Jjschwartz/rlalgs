@@ -14,36 +14,12 @@ import numpy as np
 import tensorflow as tf
 import rlalgs.utils.utils as utils
 import rlalgs.algos.basicpg.core as core
-from rlalgs.utils.logger import Logger
+import rlalgs.utils.preprocess as preprocess
+# from rlalgs.utils.logger import Logger
 
 # Just disables the warning, doesn't enable AVX/FMA
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-
-
-def simple_finish_path(ptr, path_start_idx, rew_buf):
-    """
-    Simple PG return calculator, called when an episode is done.
-    Simply sums all returns for a given episode and sets that as the
-    return for each step.
-
-    N.B. Doesn't reset the path_start_idx, this must be done outside of
-    function
-
-    Arguments:
-        ptr : index of the last entry in buffers + 1
-        path_start_idx : index of the start point of current episode in buffer
-        rew_buf : the reward buffer
-
-    Returns:
-        ret_buf : the return buffer for the episode
-    """
-    path_slice = slice(path_start_idx, ptr)
-    ep_len = ptr - path_start_idx
-    ep_rews = rew_buf[path_slice]
-    ep_ret = np.sum(ep_rews)
-    ret_buf = [ep_ret] * ep_len
-    return ret_buf
 
 
 def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
@@ -64,34 +40,51 @@ def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
     """
 
     print("Setting seeds")
-    tf.set_random_seed(seed)
+    tf.random.set_seed(seed)
     np.random.seed(seed)
 
     print("Initializing environment")
     env = env_fn()
+    obs_dim = utils.get_dim_from_space(env.observation_space)
+    num_actions = utils.get_dim_from_space(env.action_space)
 
     print("Initializing logger")
-    logger = Logger(output_fname="simple_pg" + env.spec._env_name + ".txt")
+    # logger = Logger(output_fname="simple_pg" + env.spec._env_name + ".txt")
 
     print("Building network")
-    obs_ph = utils.placeholder_from_space(env.observation_space, obs_space=True)
-    act_ph = utils.placeholder_from_space(env.action_space)
-    actions, log_probs = core.actor_critic(obs_ph, act_ph, env.action_space,
-                                           hidden_sizes=hidden_sizes)
+    # model = core.MLPCategoricalPolicy(num_actions, hidden_sizes)
+    model = core.mlp(num_actions, hidden_sizes)
 
     print("Setup loss")
-    return_ph = tf.placeholder(tf.float32, shape=(None, ))
-    loss = -tf.reduce_mean(log_probs * return_ph)
+
+    def get_action(obs):
+        logits = model.predict(obs)
+        action = np.squeeze(tf.random.categorical(logits, 1), axis=1)
+        return action
+
+    def policy_loss(acts_and_rets, logits):
+        """
+        Uses cross entropy loss (Sparse since we input actions as an int rather than
+        one hot encoding), where:
+
+        y_true = action chosen
+        y_pred = action probs
+        weighted by trajectory return
+        """
+        actions, returns = tf.split(acts_and_rets, 2, axis=-1)
+        actions = tf.cast(actions, tf.int32)
+        weighted_ce_loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+        loss = weighted_ce_loss(actions, logits, sample_weight=returns)
+        return loss
 
     print("Setting up training op")
-    train_op = tf.train.AdamOptimizer(learning_rate=lr).minimize(loss)
+    train_op = tf.keras.optimizers.Adam(learning_rate=lr)
+
+    print("Compiling model")
+    model.compile(optimizer=train_op, loss=tf.keras.losses.sparse_categorical_crossentropy)
 
     print("Initializing Replay Buffer")
-    buf = core.SimpleBuffer(simple_finish_path)
-
-    print("Launching tf session")
-    sess = tf.Session()
-    sess.run(tf.global_variables_initializer())
+    buf = core.SimpleBuffer(obs_dim, num_actions, batch_size, "simple")
 
     def train_one_epoch():
         o, r, d = env.reset(), 0, False
@@ -99,22 +92,26 @@ def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
         # for progress reporting
         ep_len, ep_ret = 0, 0
         batch_ep_lens, batch_ep_rets = [], []
+        t = 0
 
         while True:
             # render first episode of each epoch
-            if (not finished_rendering_this_epoch) and render:
+            if not finished_rendering_this_epoch and render:
                 env.render()
-            o = utils.process_obs(o, env.observation_space)
+
+            o = preprocess.preprocess_obs(o, env)
             # select action for current obs
-            a = sess.run(actions, {obs_ph: o.reshape(1, -1)})[0]
+            a = get_action(o.reshape(1, -1))
             # store step
             buf.store(o, a, r)
             # take action
             o, r, d, _ = env.step(a)
             ep_len += 1
             ep_ret += r
+            t += 1
+
             # end of episode
-            if d:
+            if d or (t == batch_size):
                 buf.finish_path()
                 o, r, d = env.reset(), 0, False
                 finished_rendering_this_epoch = True
@@ -123,27 +120,22 @@ def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
                 batch_ep_rets.append(ep_ret)
                 ep_ret = 0
                 # finish epoch
-                if buf.size() > batch_size:
+                if t == batch_size:
                     break
         # get epoch trajectories
         batch_obs, batch_acts, batch_rets = buf.get()
-        # take single policy gradient update step
-        batch_loss, _ = sess.run([loss, train_op],
-                                 feed_dict={
-                                    obs_ph: np.array(batch_obs),
-                                    act_ph: np.array(batch_acts),
-                                    return_ph: np.array(batch_rets)
-                                 })
+        batch_loss = model.fit(batch_obs, batch_acts, sample_weight=batch_rets)
         return batch_loss, batch_ep_rets, batch_ep_lens
 
     print("Starting training")
     for i in range(epochs):
         batch_loss, batch_ep_rets, batch_ep_lens = train_one_epoch()
-        logger.log_tabular("epoch", i)
-        logger.log_tabular("loss", batch_loss)
-        logger.log_tabular("avg_return", np.mean(batch_ep_rets))
-        logger.log_tabular("avg_ep_lens", np.mean(batch_ep_lens))
-        logger.dump_tabular()
+        print(f"\n{'-'*20}")
+        print("epoch:", i)
+        print("loss:", batch_loss.history)
+        print("avg_return:", np.mean(batch_ep_rets))
+        print("avg_ep_lens:", np.mean(batch_ep_lens))
+        print(f"{'-'*20}\n")
 
     if render_last:
         input("Press enter to view final policy in action")
@@ -152,7 +144,8 @@ def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
         finished_rendering_this_epoch = False
         while not finished_rendering_this_epoch:
             env.render()
-            a = sess.run(actions, {obs_ph: o.reshape(1, -1)})[0]
+            o = preprocess.preprocess_obs(o, env)
+            a = get_action(o.reshape(1, -1))
             o, r, d, _ = env.step(a)
             final_ret += r
             if d:

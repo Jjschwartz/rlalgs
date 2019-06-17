@@ -14,6 +14,7 @@ setup(name="rlalgs",
           'mpi4py',
           'pandas',
           'pyyaml',
+          'psutil',
           'matplotlib',
           'prettytable',
           'tensorflow==2.0.0-beta0'
