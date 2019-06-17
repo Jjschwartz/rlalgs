@@ -14,7 +14,7 @@ import numpy as np
 import tensorflow as tf
 import rlalgs.utils.utils as utils
 import rlalgs.algos.basicpg.core as core
-from rlalgs.utils.logger import Logger
+import rlalgs.utils.preprocess as preprocess
 
 # Just disables the warning, doesn't enable AVX/FMA
 import os
@@ -71,7 +71,7 @@ def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
     env = env_fn()
 
     print("Initializing logger")
-    logger = Logger(output_fname="simple_pg" + env.spec._env_name + ".txt")
+    # logger = Logger(output_fname="simple_pg" + env.spec._env_name + ".txt")
 
     print("Building network")
     obs_ph = utils.placeholder_from_space(env.observation_space, obs_space=True)
@@ -104,7 +104,7 @@ def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
             # render first episode of each epoch
             if (not finished_rendering_this_epoch) and render:
                 env.render()
-            o = utils.process_obs(o, env.observation_space)
+            o = preprocess.preprocess_obs(o, env)
             # select action for current obs
             a = sess.run(actions, {obs_ph: o.reshape(1, -1)})[0]
             # store step
@@ -139,11 +139,10 @@ def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
     print("Starting training")
     for i in range(epochs):
         batch_loss, batch_ep_rets, batch_ep_lens = train_one_epoch()
-        logger.log_tabular("epoch", i)
-        logger.log_tabular("loss", batch_loss)
-        logger.log_tabular("avg_return", np.mean(batch_ep_rets))
-        logger.log_tabular("avg_ep_lens", np.mean(batch_ep_lens))
-        logger.dump_tabular()
+        print("\nepoch", i)
+        print("loss", batch_loss)
+        print("avg_return", np.mean(batch_ep_rets))
+        print("avg_ep_lens", np.mean(batch_ep_lens))
 
     if render_last:
         input("Press enter to view final policy in action")
@@ -152,6 +151,7 @@ def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=5000,
         finished_rendering_this_epoch = False
         while not finished_rendering_this_epoch:
             env.render()
+            o = preprocess.preprocess_obs(o, env)
             a = sess.run(actions, {obs_ph: o.reshape(1, -1)})[0]
             o, r, d, _ = env.step(a)
             final_ret += r
