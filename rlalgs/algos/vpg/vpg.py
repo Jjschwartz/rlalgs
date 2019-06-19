@@ -9,121 +9,16 @@ import numpy as np
 import tensorflow as tf
 import rlalgs.utils.logger as log
 import rlalgs.utils.utils as utils
-import rlalgs.algos.vpg.core as core
+import tensorflow.keras.backend as K
+import tensorflow.keras.layers as layers
 import rlalgs.utils.preprocess as preprocess
-from rlalgs.algos.vpg.core import mlp_actor_critic
+import tensorflow.keras.optimizers as optimizers
+from rlalgs.algos.models import mlp_actor_critic
+from rlalgs.algos.vpg.core import VPGReplayBuffer
 
 # Just disables the warning, doesn't enable AVX/FMA
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-
-
-class VPGReplayBuffer:
-    """
-    A buffer for VPG storing trajectories (o, a, r, v)
-    """
-    valid_fns = ["simple", "adv", "gae"]
-
-    def __init__(self, obs_dim, act_dim, buffer_size, gamma=0.99, lmbda=0.95,
-                 adv_fn="gae"):
-        """
-        Init an empty buffer
-
-        Arguments:
-            obs_dim : the dimensions of an environment observation
-            act_dim : the dimensions of an environment action
-            buffer_size : size of buffer
-            gamma : gamma discount hyperparam for GAE
-            lmbda : lambda hyperparam for GAE
-            adv_fn : the advantage function to use, must be a value in valid_fns
-                     class property
-        """
-        assert adv_fn in self.valid_fns
-        self.obs_buf = np.zeros(utils.combined_shape(buffer_size, obs_dim), dtype=np.float32)
-        self.act_buf = np.zeros(utils.combined_shape(buffer_size, act_dim), dtype=np.float32)
-        self.rew_buf = np.zeros(buffer_size, dtype=np.float32)
-        self.val_buf = np.zeros(buffer_size, dtype=np.float32)
-        self.ret_buf = np.zeros(buffer_size, dtype=np.float32)
-        self.adv_buf = np.zeros(buffer_size, dtype=np.float32)
-        self.ptr, self.path_start_idx = 0, 0
-        self.max_size = buffer_size
-        self.gamma = gamma
-        self.lmbda = lmbda
-        self.adv_fn = adv_fn
-
-    def store(self, o, a, r, v):
-        """
-        Store a single step outcome (o, a, r, v) in the buffer
-        """
-        assert self.ptr < self.max_size
-        self.obs_buf[self.ptr] = o
-        self.act_buf[self.ptr] = a
-        self.rew_buf[self.ptr] = r
-        self.val_buf[self.ptr] = v
-        self.ptr += 1
-
-    def finish_path(self, last_val=0):
-        """
-        Called when an episode is done.
-        Constructs the advantage buffer for the episode
-        """
-        if self.adv_fn == "simple":
-            self.rtg_finish_path()
-        elif self.adv_fn == "adv":
-            self.adv_path_finish()
-        else:
-            self.gae_path_finish(last_val)
-        self.path_start_idx = self.ptr
-
-    def rtg_finish_path(self):
-        """
-        reward to go with no value function baseline
-        """
-        path_slice = slice(self.path_start_idx, self.ptr)
-        ep_rews = self.rew_buf[path_slice]
-        ep_ret = utils.reward_to_go(ep_rews)
-        self.ret_buf[path_slice] = ep_ret
-        self.adv_buf[path_slice] = ep_ret
-
-    def adv_path_finish(self):
-        """
-        Simple advantage (Q(s, a) - V(s))
-        """
-        path_slice = slice(self.path_start_idx, self.ptr)
-        ep_rews = self.rew_buf[path_slice]
-        ep_vals = self.val_buf[path_slice]
-        ep_ret = utils.reward_to_go(ep_rews)
-        self.ret_buf[path_slice] = ep_ret
-        self.adv_buf[path_slice] = ep_ret - ep_vals
-
-    def gae_path_finish(self, last_val=0):
-        """
-        General advantage estimate
-        """
-        path_slice = slice(self.path_start_idx, self.ptr)
-        ep_rews = np.append(self.rew_buf[path_slice], last_val)
-        ep_vals = np.append(self.val_buf[path_slice], last_val)
-        # calculate GAE
-        deltas = ep_rews[:-1] + self.gamma * ep_vals[1:] - ep_vals[:-1]
-        ep_adv = core.discount_cumsum(deltas, self.gamma * self.lmbda)
-        # calculate discounted reward to go for value function update
-        ep_ret = core.discount_cumsum(ep_rews, self.gamma)[:-1]
-        self.ret_buf[path_slice] = ep_ret
-        self.adv_buf[path_slice] = ep_adv
-
-    def get(self):
-        """
-        Return the stored trajectories and reset the buffer
-        """
-        assert self.ptr == self.max_size
-        self.ptr, self.path_start_idx = 0, 0
-        return [self.obs_buf, self.act_buf, self.adv_buf, self.ret_buf, self.val_buf]
-
-    def size(self):
-        """
-        Return size of buffer
-        """
-        return self.ptr
 
 
 def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs=50,
@@ -150,42 +45,61 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
     obs_dim : dimensions for observations (if None then dimensions extracted from environment
         observation space)
     """
-    tf.reset_default_graph()
-    tf.set_random_seed(seed)
+    print("Setting seeds")
+    tf.random.set_seed(seed)
     np.random.seed(seed)
 
+    print("Initializing logger")
     logger = log.Logger(**logger_kwargs)
     logger.save_config(locals())
-
-    env = env_fn()
 
     if preprocess_fn is None:
         preprocess_fn = preprocess.preprocess_obs
 
+    print("Initializing environment")
+    env = env_fn()
+
     if obs_dim is None:
         obs_dim = utils.get_dim_from_space(env.observation_space)
-        obs_ph = utils.placeholder_from_space(env.observation_space, True)
-    else:
-        obs_ph = tf.placeholder(tf.float32, shape=(None, obs_dim))
-
     act_dim = env.action_space.shape
+
+    print("Building network")
+    obs_ph = layers.Input(shape=(obs_dim,))
     act_ph = utils.placeholder_from_space(env.action_space)
-    ret_ph = tf.placeholder(tf.float32, shape=(None, ))
-    adv_ph = tf.placeholder(tf.float32, shape=(None, ))
+    ret_ph = utils.get_placeholder(tf.float32, shape=(None, ))
+    adv_ph = utils.get_placeholder(tf.float32, shape=(None, ))
 
-    pi, logp, v = mlp_actor_critic(obs_ph, act_ph, env.action_space, hidden_sizes=hidden_sizes)
-    pi_loss = -tf.reduce_mean(logp * adv_ph)
-    v_loss = tf.reduce_mean((ret_ph - v)**2)
+    pi_model, pi_fn, pi_logp, v_model, v_fn = mlp_actor_critic(
+        obs_ph, act_ph, env.action_space, hidden_sizes=hidden_sizes)
 
-    pi_train_op = tf.train.AdamOptimizer(learning_rate=pi_lr).minimize(pi_loss)
-    v_train_op = tf.train.AdamOptimizer(learning_rate=v_lr).minimize(v_loss)
+    print("Setup training ops - actor")
+    pi_loss = -tf.reduce_mean(pi_logp * adv_ph)
+    pi_train_op = optimizers.Adam(learning_rate=pi_lr)
+    pi_updates = pi_train_op.get_updates(pi_loss, pi_model.trainable_weights)
+    pi_train_fn = K.function([pi_model.input, act_ph, adv_ph], [pi_loss], updates=pi_updates)
 
+    print("Setup training ops - critic")
+    v_loss = tf.reduce_mean((ret_ph - v_model.output)**2)
+    print("Setup training ops - 1")
+    v_train_op = optimizers.Adam(learning_rate=v_lr)
+    print("Setup training ops - 2")
+    v_updates = v_train_op.get_updates(v_loss, v_model.trainable_weights)
+    print("Setup training ops - 3")
+    v_train_fn = K.function([v_model.input, ret_ph], [v_loss], updates=v_updates)
+    print("Setup training ops - 4")
+
+    print("Initializing Replay Buffer")
     buf = VPGReplayBuffer(obs_dim, act_dim, batch_size, gamma=gamma, adv_fn="gae")
 
-    sess = tf.Session()
-    sess.run(tf.global_variables_initializer())
+    # logger.setup_tf_model_saver(sess, env, {log.OBS_NAME: obs_ph}, {log.ACTS_NAME: pi})
 
-    logger.setup_tf_model_saver(sess, env, {log.OBS_NAME: obs_ph}, {log.ACTS_NAME: pi})
+    def get_action(o):
+        action = pi_fn([o])[0]
+        return np.squeeze(action, axis=-1)
+
+    def get_value(o):
+        val = v_fn([o])[0]
+        return np.squeeze(val, axis=-1)
 
     def train_one_epoch():
         o, r, d = env.reset(), 0, False
@@ -199,10 +113,10 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
                 env.render()
 
             o = preprocess_fn(o, env)
-
-            a, v_t = sess.run([pi, v], {obs_ph: o.reshape(1, -1)})
-            buf.store(o, a[0], r, v_t[0])
-            o, r, d, _ = env.step(a[0])
+            a = get_action(o.reshape(1, -1))
+            v_t = get_value(o.reshape(1, -1))
+            buf.store(o, a, r, v_t)
+            o, r, d, _ = env.step(a)
 
             ep_len += 1
             ep_ret += r
@@ -215,7 +129,7 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
                     last_val = r
                 else:
                     o = preprocess_fn(o, env)
-                    last_val = sess.run(v, {obs_ph: o.reshape(1, -1)})
+                    last_val = get_value(o.reshape(1, -1))
                 buf.finish_path(last_val)
 
                 o, r, d = env.reset(), 0, False
@@ -227,15 +141,8 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
                     break
 
         batch_obs, batch_acts, batch_adv, batch_rets, batch_vals = buf.get()
-        inputs = {obs_ph: np.array(batch_obs),
-                  act_ph: np.array(batch_acts),
-                  adv_ph: np.array(batch_adv),
-                  ret_ph: np.array(batch_rets)}
-
-        pi_l, v_l = sess.run([pi_loss, v_loss], feed_dict=inputs)
-        sess.run(pi_train_op, feed_dict=inputs)
-        sess.run(v_train_op, feed_dict=inputs)
-
+        pi_l = pi_train_fn([batch_obs, batch_acts, batch_adv])[0]
+        v_l = v_train_fn([batch_obs, batch_rets])[0]
         return pi_l, v_l, batch_ep_rets, batch_ep_lens
 
     total_epoch_times = 0
@@ -259,9 +166,9 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
         avg_epoch_returns.append(avg_return)
         logger.dump_tabular()
 
-        if (save_freq != 0 and i % save_freq == 0) or i == epochs-1:
-            itr = None if overwrite_save else i
-            logger.save_model(itr)
+        # if (save_freq != 0 and i % save_freq == 0) or i == epochs-1:
+        #     itr = None if overwrite_save else i
+        #     logger.save_model(itr)
 
     print("Average epoch time = ", total_epoch_times/epochs)
 
@@ -273,8 +180,8 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
         while not finished_rendering_this_epoch:
             env.render()
             o = preprocess_fn(o, env)
-            a = sess.run(pi, {obs_ph: o.reshape(1, -1)})
-            o, r, d, _ = env.step(a[0])
+            a = get_action(o.reshape(1, -1))
+            o, r, d, _ = env.step(a)
             final_ret += r
             if d:
                 finished_rendering_this_epoch = True

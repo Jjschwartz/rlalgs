@@ -1,61 +1,113 @@
 """
 Core functions for use with Vanilla Policy Gradient (VPG) implementation
 """
-import scipy.signal
-import tensorflow as tf
+import numpy as np
 import rlalgs.utils.utils as utils
-from gym.spaces import Box, Discrete
 
 
-def discount_cumsum(x, discount):
+class VPGReplayBuffer:
     """
-    magic from rllab for computing discounted cumulative sums of vectors.
-
-    input:
-        vector x,
-        [x0,
-         x1,
-         x2]
-
-    output:
-        [x0 + discount * x1 + discount^2 * x2,
-         x1 + discount * x2,
-         x2]
+    A buffer for VPG storing trajectories (o, a, r, v)
     """
-    return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
+    valid_fns = ["simple", "adv", "gae"]
 
+    def __init__(self, obs_dim, act_dim, buffer_size, gamma=0.99, lmbda=0.95,
+                 adv_fn="gae"):
+        """
+        Init an empty buffer
 
-def mlp_actor_critic(x, a, action_space, hidden_sizes=[64],
-                     activation=tf.tanh, output_activation=None):
-    """
-    Create the actor critic model of VPG
+        Arguments:
+            obs_dim : the dimensions of an environment observation
+            act_dim : the dimensions of an environment action
+            buffer_size : size of buffer
+            gamma : gamma discount hyperparam for GAE
+            lmbda : lambda hyperparam for GAE
+            adv_fn : the advantage function to use, must be a value in valid_fns
+                     class property
+        """
+        assert adv_fn in self.valid_fns
+        self.obs_buf = np.zeros(utils.combined_shape(buffer_size, obs_dim), dtype=np.float32)
+        self.act_buf = np.zeros(utils.combined_shape(buffer_size, act_dim), dtype=np.float32)
+        self.rew_buf = np.zeros(buffer_size, dtype=np.float32)
+        self.val_buf = np.zeros(buffer_size, dtype=np.float32)
+        self.ret_buf = np.zeros(buffer_size, dtype=np.float32)
+        self.adv_buf = np.zeros(buffer_size, dtype=np.float32)
+        self.ptr, self.path_start_idx = 0, 0
+        self.max_size = buffer_size
+        self.gamma = gamma
+        self.lmbda = lmbda
+        self.adv_fn = adv_fn
 
-    Arguments:
-        x : tf placeholder input to network
-        a : tf placeholder for actions
-        action_space : action space of environment as gym.space
-        hidden_sizes : ordered list of size of each hidden layer
-        activation : tf activation function for hidden layers
-        output_activation : tf activation function for output layer or None if no activation
+    def store(self, o, a, r, v):
+        """
+        Store a single step outcome (o, a, r, v) in the buffer
+        """
+        assert self.ptr < self.max_size
+        self.obs_buf[self.ptr] = o
+        self.act_buf[self.ptr] = a
+        self.rew_buf[self.ptr] = r
+        self.val_buf[self.ptr] = v
+        self.ptr += 1
 
-    Returns:
-        pi : policy network action selection as tf tensor
-        logp : log probability of action in policy network as tf tensor
-        v : output of value network as tf tensor
-    """
-    if isinstance(action_space, Box):
-        policy = utils.mlp_gaussian_policy
-    elif isinstance(action_space, Discrete):
-        policy = utils.mlp_categorical_policy
-    else:
-        raise NotImplementedError
+    def finish_path(self, last_val=0):
+        """
+        Called when an episode is done.
+        Constructs the advantage buffer for the episode
+        """
+        if self.adv_fn == "simple":
+            self.rtg_finish_path()
+        elif self.adv_fn == "adv":
+            self.adv_path_finish()
+        else:
+            self.gae_path_finish(last_val)
+        self.path_start_idx = self.ptr
 
-    # create policy and value networks
-    # create within scopes so to insure seperate models are created since we call the same
-    # method to create both models
-    with tf.variable_scope("pi"):
-        pi, logp = policy(x, a, action_space, hidden_sizes, activation, output_activation)
-    with tf.variable_scope("v"):
-        v = tf.squeeze(utils.mlp(x, 1, hidden_sizes, activation, output_activation), axis=1)
+    def rtg_finish_path(self):
+        """
+        reward to go with no value function baseline
+        """
+        path_slice = slice(self.path_start_idx, self.ptr)
+        ep_rews = self.rew_buf[path_slice]
+        ep_ret = utils.reward_to_go(ep_rews)
+        self.ret_buf[path_slice] = ep_ret
+        self.adv_buf[path_slice] = ep_ret
 
-    return pi, logp, v
+    def adv_path_finish(self):
+        """
+        Simple advantage (Q(s, a) - V(s))
+        """
+        path_slice = slice(self.path_start_idx, self.ptr)
+        ep_rews = self.rew_buf[path_slice]
+        ep_vals = self.val_buf[path_slice]
+        ep_ret = utils.reward_to_go(ep_rews)
+        self.ret_buf[path_slice] = ep_ret
+        self.adv_buf[path_slice] = ep_ret - ep_vals
+
+    def gae_path_finish(self, last_val=0):
+        """
+        General advantage estimate
+        """
+        path_slice = slice(self.path_start_idx, self.ptr)
+        ep_rews = np.append(self.rew_buf[path_slice], last_val)
+        ep_vals = np.append(self.val_buf[path_slice], last_val)
+        # calculate GAE
+        deltas = ep_rews[:-1] + self.gamma * ep_vals[1:] - ep_vals[:-1]
+        ep_adv = utils.discount_cumsum(deltas, self.gamma * self.lmbda)
+        # calculate discounted reward to go for value function update
+        ep_ret = utils.discount_cumsum(ep_rews, self.gamma)[:-1]
+        self.ret_buf[path_slice] = ep_ret
+        self.adv_buf[path_slice] = ep_adv
+
+    def get(self):
+        """
+        Return the stored trajectories and reset the buffer
+        """
+        assert self.ptr == self.max_size
+        self.ptr, self.path_start_idx = 0, 0
+        return [self.obs_buf, self.act_buf, self.adv_buf, self.ret_buf, self.val_buf]
+
+    def size(self):
+        """
+        Return size of buffer
+        """
+        return self.ptr

@@ -6,6 +6,7 @@ import datetime
 import numpy as np
 import scipy.signal
 import tensorflow as tf
+import tensorflow.keras.backend as K
 from gym.spaces import Box, Discrete
 
 
@@ -41,10 +42,10 @@ def placeholder_from_space(space, obs_space=False, name=None):
     if isinstance(space, Discrete):
         dim = get_dim_from_space(space)
         if obs_space:
-            return tf.placeholder(tf.float32, shape=combined_shape(None, dim), name=name)
-        return tf.placeholder(tf.int32, shape=(None, ), name=name)
+            return get_placeholder(tf.float32, combined_shape(None, dim), name)
+        return get_placeholder(tf.int32, (None, ), name)
     elif isinstance(space, Box):
-        return tf.placeholder(tf.float32, shape=combined_shape(None, space.shape), name=name)
+        return get_placeholder(tf.float32, combined_shape(None, space.shape), name)
     raise NotImplementedError
 
 
@@ -59,6 +60,15 @@ def combined_shape(length, shape=None):
     else:
         # unpack shape tuple
         return (length, *shape)     # noqa: E999
+
+
+def get_placeholder(dtype, shape, name=None):
+    """
+    Returns a placeholder.
+
+    Used to abstract underlying implementation (tf or K)
+    """
+    return K.placeholder(dtype=dtype, shape=shape, name=name)
 
 
 def reward_to_go(rews):

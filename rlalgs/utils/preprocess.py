@@ -13,7 +13,7 @@ def preprocess_obs(o, env=None):
     obs_space = env.observation_space
     if isinstance(obs_space, Discrete):
         return np.eye(obs_space.n)[o]
-    return o
+    return np.squeeze(o)
 
 
 def preprocess_pong_image(o, env=None):
