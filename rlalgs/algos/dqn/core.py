@@ -2,63 +2,47 @@
 Some core functions for Deep Q-network implementation
 """
 import numpy as np
-import tensorflow as tf
 import rlalgs.utils.utils as utils
 
 
-def get_vars(scope):
-    # scope_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=scope)
-    scope_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=scope)
-    return scope_vars
-
-
-def count_vars(scope):
-    v = get_vars(scope)
-    return sum([np.prod(var.shape.as_list()) for var in v])
-
-
-def mlp(x, output_size, hidden_sizes=[64], activation=tf.tanh, output_activation=None):
+class DQNReplayBuffer:
     """
-    Creates a fully connected neural network
+    Replay buffer for DQN
 
-    Arguments:
-        x : tf placeholder input to network
-        output_size : number of neurons in output layer
-        hidden_sizes : ordered list of size of each hidden layer
-        activation : tf activation function for hidden layers
-        output_activation : tf activation function for output layer or None for linear activation
+    Store experiences (o_t, a_t, r_t, o_t+1, d_t)
+    Returns a random subset of experiences for training
 
-    Returns:
-        y : output layer as tf tensor
+    Stores only the c most recent experiences, where c is the capacity of the buffer
     """
-    for size in hidden_sizes:
-        x = tf.layers.dense(x, size, activation=activation)
-    return tf.layers.dense(x, output_size, activation=output_activation)
 
+    def __init__(self, obs_dim, act_dim, capacity):
+        self.obs_buf = np.zeros(utils.combined_shape(capacity, obs_dim), dtype=np.float32)
+        self.act_buf = np.zeros(utils.combined_shape(capacity, act_dim), dtype=np.float32)
+        self.rew_buf = np.zeros(capacity, dtype=np.float32)
+        self.obs_prime_buf = np.zeros(utils.combined_shape(capacity, obs_dim), dtype=np.float32)
+        self.done_buf = np.zeros(capacity, dtype=np.float32)
+        self.ptr, self.size = 0, 0
+        self.capacity = capacity
 
-def q_network(x, a, action_space, hidden_sizes=[64], activation=tf.nn.relu,
-              output_activation=None):
-    """
-    Create a Q-network as a fully connected neural network, where the output
-    layer is the q-value for each action in the action space
+    def store(self, o, a, r, o_prime, d):
+        """
+        Store an experience (o_t, a_t, r_t, o_t+1, d_t) in the buffer
+        """
+        self.obs_buf[self.ptr] = o
+        self.act_buf[self.ptr] = a
+        self.rew_buf[self.ptr] = r
+        self.obs_prime_buf[self.ptr] = o_prime
+        self.done_buf[self.ptr] = d
+        self.ptr = (self.ptr+1) % self.capacity
+        self.size = min(self.size+1, self.capacity)
 
-    Arguments:
-        x : input placeholder or variable
-        a : output action placeholder
-        action_space : action space gym.space object for environment
-        hidden_sizes : list of number of units per layer in order (including output layer)
-        activation : tf activation function to use for hidden layers
-        output_activation : tf activation functions to use for output layer
-
-    Returns:
-        pi : action selection tensor (max{a} Q(s, a)) for input 'x'
-        q_pi : q value of best action for input 'x'
-        act_q_val : the q value corresponding to action 'a' and input 'x'
-    """
-    act_dim = utils.get_dim_from_space(action_space)
-    q_vals = mlp(x, act_dim, hidden_sizes, activation, output_activation)
-    pi = tf.squeeze(tf.argmax(q_vals, axis=1))
-    q_pi = tf.reduce_max(q_vals, axis=-1)
-    action_mask = tf.one_hot(a, act_dim)
-    act_q_val = tf.reduce_sum(action_mask * q_vals, axis=-1)
-    return pi, q_pi, act_q_val, q_vals
+    def sample(self, num_samples):
+        """
+        Get a num_samples random samples from the replay buffer
+        """
+        sample_idxs = np.random.choice(self.size, num_samples)
+        return {"o": self.obs_buf[sample_idxs],
+                "a": self.act_buf[sample_idxs],
+                "r": self.rew_buf[sample_idxs],
+                "o_prime": self.obs_prime_buf[sample_idxs],
+                "d": self.done_buf[sample_idxs]}

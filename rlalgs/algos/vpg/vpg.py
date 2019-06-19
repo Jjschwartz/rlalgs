@@ -76,7 +76,7 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
     pi_loss = -tf.reduce_mean(pi_logp * adv_ph)
     pi_train_op = optimizers.Adam(learning_rate=pi_lr)
     pi_updates = pi_train_op.get_updates(pi_loss, pi_model.trainable_weights)
-    pi_train_fn = K.function([pi_model.input, act_ph, adv_ph], [pi_loss], updates=pi_updates)
+    pi_train_fn = K.function([obs_ph, act_ph, adv_ph], [pi_loss], updates=pi_updates)
 
     print("Setup training ops - critic")
     v_loss = tf.reduce_mean((ret_ph - v_model.output)**2)

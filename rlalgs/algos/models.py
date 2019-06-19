@@ -10,6 +10,39 @@ import tensorflow.keras.backend as K
 from tensorflow.keras.models import Model
 
 
+def q_network(x, a, action_space, hidden_sizes=[64], activation=tf.nn.relu,
+              output_activation=None):
+    """
+    Create a Q-network as a fully connected neural network, where the output
+    layer is the q-value for each action in the action space
+
+    Arguments:
+        x : input placeholder
+        a : action taken placeholder
+        action_space : action space gym.space object for environment
+        hidden_sizes : list of number of units per layer in order (including output layer)
+        activation : tf activation function to use for hidden layers
+        output_activation : tf activation functions to use for output layer
+
+    Returns:
+        q_model : keras q network
+        pi_fn : Keras functon for action selection
+        q_pi : max q value for input
+        act_q_val : the q value corresponding to action 'a' and input 'x'
+    """
+    act_dim = utils.get_dim_from_space(action_space)
+    q_model = mlp(x, act_dim, hidden_sizes, activation, output_activation)
+
+    pi = tf.squeeze(tf.argmax(q_model.output, axis=1))
+    pi_fn = K.function(inputs=[x], outputs=[pi])
+
+    q_pi = tf.reduce_max(q_model.output, axis=-1)
+    action_mask = tf.one_hot(a, act_dim)
+    act_q_val = tf.reduce_sum(action_mask * q_model.output, axis=-1)
+
+    return q_model, pi_fn, q_pi, act_q_val
+
+
 def mlp_actor_critic(x, a, action_space, hidden_sizes=[64], activation=tf.tanh,
                      output_activation=None):
     """
@@ -62,7 +95,7 @@ def mlp_value_network(x, hidden_sizes=[32], activation=tf.tanh, output_activatio
     """
     v_model = mlp(x, 1, hidden_sizes, activation, output_activation)
     v_predict = tf.squeeze(v_model.output, axis=1)
-    v_fn = K.function(inputs=[v_model.input], outputs=[v_predict])
+    v_fn = K.function(inputs=[x], outputs=[v_predict])
     return v_model, v_fn
 
 
@@ -118,8 +151,8 @@ def mlp_categorical_policy(x, a, act_dim, hidden_sizes=[64], activation=tf.tanh,
     action_mask = K.one_hot(a, act_dim)
     log_probs = tf.reduce_sum(action_mask * tf.nn.log_softmax(model.output), axis=1)
     # action selection function
-    act_predict = tf.squeeze(tf.random.categorical(model.output, 1), axis=1, name="pi")
-    action_fn = K.function(inputs=[model.input], outputs=[act_predict])
+    act_predict = tf.squeeze(tf.random.categorical(model.output, 1), axis=1)
+    action_fn = K.function(inputs=[x], outputs=[act_predict])
     return model, action_fn, log_probs
 
 
@@ -148,7 +181,7 @@ def mlp_gaussian_policy(x, a, act_dim, hidden_sizes=[64], activation=tf.tanh,
 
     std = tf.exp(log_std)
     act_predict = model.output + tf.random.normal(tf.shape(model.output)) * std
-    action_fn = K.function(inputs=[model.input], outputs=[act_predict])
+    action_fn = K.function(inputs=[x], outputs=[act_predict])
     return model, action_fn, log_probs
 
 
