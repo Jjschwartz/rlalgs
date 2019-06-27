@@ -26,7 +26,7 @@ def discount_cumsum(x, discount):
 
 
 def mlp_actor_critic(x, a, action_space, hidden_sizes=[64],
-                     activation=tf.tanh, output_activation=None):
+                     activation=tf.nn.relu, output_activation=None):
     """
     Create the actor critic model of VPG
 

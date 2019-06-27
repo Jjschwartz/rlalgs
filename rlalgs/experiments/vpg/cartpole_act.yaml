@@ -1,0 +1,6 @@
+# experiment definition for CartPole using VPG, using default params
+algo: vpg
+env: "CartPole-v0"
+args:
+  epochs: 50
+  hidden_sizes: [200]

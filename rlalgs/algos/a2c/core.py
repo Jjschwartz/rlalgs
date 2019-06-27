@@ -6,7 +6,7 @@ import rlalgs.utils.utils as utils
 from gym.spaces import Box, Discrete
 
 
-def mlp_actor_critic(x, a, action_space, hidden_sizes=[64], activation=tf.tanh,
+def mlp_actor_critic(x, a, action_space, hidden_sizes=[64], activation=tf.nn.relu,
                      output_activation=None):
     if isinstance(action_space, Box):
         policy = utils.mlp_gaussian_policy
