@@ -11,20 +11,18 @@ Based off of OpenAI's spinningup implementation of policy gradient
 N.B. some of the code is extra verbose to help with understanding
 """
 import gym
+import time
 import numpy as np
 import tensorflow as tf
-import rlalgs.utils.utils as utils
 import tensorflow.keras.backend as K
-import rlalgs.algos.basicpg.core as core
 import tensorflow.keras.layers as layers
+import tensorflow.keras.optimizers as optimizers
+
+import rlalgs.utils.utils as utils
+import rlalgs.algos.simplepg.core as core
 from rlalgs.algos.models import mlp_actor
 import rlalgs.utils.preprocess as preprocess
-import tensorflow.keras.optimizers as optimizers
 from rlalgs.utils.logger import Logger, setup_logger_kwargs
-
-# Just disables the warning, doesn't enable AVX/FMA
-import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 
 def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=2000,
@@ -79,6 +77,9 @@ def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=2000,
         return np.squeeze(action, axis=-1)
 
     def train_one_epoch():
+        interaction_start = time.time()
+        get_action_time = 0
+
         o, r, d = env.reset(), 0, False
         finished_rendering_this_epoch = False
         # for progress reporting
@@ -92,7 +93,11 @@ def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=2000,
                 env.render()
 
             o = preprocess.preprocess_obs(o, env)
+
+            a_t = time.time()
             a = get_action(o.reshape(1, -1))
+            get_action_time += (time.time() - a_t)
+
             buf.store(o, a, r)
             o, r, d, _ = env.step(a)
 
@@ -111,8 +116,15 @@ def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=2000,
                 if t == batch_size:
                     break
 
+        print(f"Interaction time = {time.time() - interaction_start:.5f}")
+
+        train_start = time.time()
         batch_obs, batch_acts, batch_rets = buf.get()
         batch_loss = train_fn([batch_obs, batch_acts, batch_rets])[0]
+        print(f"Train time = {time.time() - train_start:.5f}")
+        print(f"Get_action time = {get_action_time / t:.5f}")
+        print(f"Get_action_time total = {get_action_time}")
+
         return batch_loss, batch_ep_rets, batch_ep_lens
 
     print("Starting training")

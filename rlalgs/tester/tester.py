@@ -4,66 +4,57 @@ standard benchmarks
 """
 import gym
 import time
-import tensorflow as tf
+
 import rlalgs.utils.logger as logger
 import rlalgs.tester.utils as testutils
 import rlalgs.utils.preprocess as preprocess
 
-# Just disables the warning, doesn't enable AVX/FMA
-import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
-
-def run_episode(sess, env, x, pi, render, preprocess_fn):
+def run_episode(env, pi_fn, preprocess_fn, render):
     """
     Runs a single episode of the given environment for a model
 
     Arguments:
-        sess : the tensorflow session
         env : the gym environment
-        x : the policy model input tf placeholder
-        pi : the policy model output tf placeholder
+        pi_fn : policy function
+        preprocess_fn : observation processing function
+        render : whether to render episode (True) or not (False)
 
     Returns:
         epRew : total reward for episode
+        t : total time steps for episode
     """
     epRew = 0
     o, r, d = env.reset(), 0, False
     t = 0
+    a_time = 0
     while not d:
         if render:
             env.render()
             time.sleep(0.01)
         o = preprocess_fn(o, env)
-        a = sess.run(pi, {x: o.reshape(1, -1)})
-        try:
-            a_processed = a[0]
-        except IndexError:
-            # some algs return action directly (i.e. argmax(Q-val) for Q-learning)
-            a_processed = a
-        o, r, d, _ = env.step(a_processed)
+        a_start = time.time()
+        a = pi_fn(o)
+        a_time += (time.time() - a_start)
+        o, r, d, _ = env.step(a)
         epRew += r
         t += 1
+    print(f"Get action time: {a_time/t:.5f} sec")
     return epRew, t
 
 
-def load_model(fpath):
+def load_policy(fpath):
     """
-    Load a trained model from file
+    Load a trained policy from file
 
     Arguments:
         fpath : path to model directory
 
     Returns:
-        sess : tensorflow sess
-        x : the policy model input tf placeholder
-        pi : the policy model output tf placeholder
+        pi_fn : the action selection function
     """
-    sess = tf.Session()
-    model_vars = logger.restore_model(sess, args.fpath)
-    x = model_vars["inputs"][logger.OBS_NAME]
-    pi = model_vars["outputs"][logger.ACTS_NAME]
-    return sess, x, pi
+    _, _, pi_fn = logger.restore_model(fpath)
+    return pi_fn
 
 
 if __name__ == "__main__":
@@ -84,12 +75,12 @@ if __name__ == "__main__":
     print("Running for {} trials".format(trials))
     env = gym.make(env_name)
 
-    sess, x, pi = load_model(args.fpath)
+    pi_fn = load_policy(args.fpath)
     preprocess_fn, _ = preprocess.get_preprocess_fn(env_name)
 
     total_rew = 0
     for i in range(trials):
-        ep_rew, t = run_episode(sess, env, x, pi, args.render, preprocess_fn)
+        ep_rew, t = run_episode(env, pi_fn, preprocess_fn, args.render)
         print("Trial {}: \t total reward = {}, total steps = {}".format(i, ep_rew, t))
         total_rew += ep_rew
 

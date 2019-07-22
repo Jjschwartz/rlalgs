@@ -2,15 +2,17 @@
 This module contains functions for creating neural network models
 """
 import numpy as np
-import tensorflow as tf
-import rlalgs.utils.utils as utils
-from tensorflow.keras import layers
 from gym.spaces import Box, Discrete
-import tensorflow.keras.backend as K
+
+import tensorflow as tf
+from tensorflow.keras import layers
 from tensorflow.keras.models import Model
 
+import rlalgs.utils.utils as utils
+import rlalgs.algos.policy as policy_fn
 
-def q_network(x, a, action_space, hidden_sizes=[64], activation=tf.nn.relu,
+
+def q_network(x, action_space, hidden_sizes=[64], activation=tf.nn.relu,
               output_activation=None):
     """
     Create a Q-network as a fully connected neural network, where the output
@@ -18,7 +20,6 @@ def q_network(x, a, action_space, hidden_sizes=[64], activation=tf.nn.relu,
 
     Arguments:
         x : input placeholder
-        a : action taken placeholder
         action_space : action space gym.space object for environment
         hidden_sizes : list of number of units per layer in order (including output layer)
         activation : tf activation function to use for hidden layers
@@ -26,25 +27,27 @@ def q_network(x, a, action_space, hidden_sizes=[64], activation=tf.nn.relu,
 
     Returns:
         q_model : keras q network
-        pi_fn : Keras functon for action selection
-        q_pi : max q value for input
-        act_q_val : the q value corresponding to action 'a' and input 'x'
+        pi_fn : action selection functon
+        q_fn : q value function, which return max q value for input and
+            q value corresponding to action 'a' and input 'x'
     """
     act_dim = utils.get_dim_from_space(action_space)
     q_model = mlp(x, act_dim, hidden_sizes, activation, output_activation)
 
-    pi = tf.squeeze(tf.argmax(q_model.output, axis=1))
-    pi_fn = K.function(inputs=[x], outputs=[pi])
+    pi_fn = policy_fn.discrete_qlearning(q_model)
 
-    q_pi = tf.reduce_max(q_model.output, axis=-1)
-    action_mask = tf.one_hot(a, act_dim)
-    act_q_val = tf.reduce_sum(action_mask * q_model.output, axis=-1)
+    @tf.function
+    def q_fn(a, o):
+        q_pi = tf.reduce_max(q_model(o), axis=-1)
+        action_mask = tf.one_hot(a, act_dim)
+        act_q_val = tf.reduce_sum(action_mask * q_pi, axis=-1)
+        return q_pi, act_q_val
 
-    return q_model, pi_fn, q_pi, act_q_val
+    return q_model, pi_fn, q_fn
 
 
 def mlp_actor_critic(x, a, action_space, hidden_sizes=[64], activation=tf.tanh,
-                     output_activation=None):
+                     output_activation=None, share_layers=False):
     """
     Create fully-connected policy (actor) and value (critic) networks for a continuous or
     categorical policy.
@@ -56,6 +59,7 @@ def mlp_actor_critic(x, a, action_space, hidden_sizes=[64], activation=tf.tanh,
         hidden_sizes : list of number of units per layer in order (including output layer)
         activation : tf activation function to use for hidden layers
         output_activation : tf activation functions to use for outq layer
+        share_layers : whether to share common layers between actor and critic models or not
 
     Returns:
         pi_model : keras policy network
@@ -72,41 +76,44 @@ def mlp_actor_critic(x, a, action_space, hidden_sizes=[64], activation=tf.tanh,
         raise NotImplementedError
 
     act_dim = utils.get_dim_from_space(action_space)
+    pi_model, last_hidden_layer = mlp(x, x, act_dim, hidden_sizes, activation, output_activation)
 
-    pi_model, pi_fn, pi_logp = policy(x, a, act_dim, hidden_sizes, activation, output_activation)
-    v_model, v_fn = mlp_value_network(x, hidden_sizes, activation, output_activation)
+    if share_layers:
+        v_model, _ = mlp(x, last_hidden_layer, 1, [], activation, output_activation)
+    else:
+        v_model, _ = mlp(x, x, 1, hidden_sizes, activation, output_activation)
 
-    return pi_model, pi_fn, pi_logp, v_model, v_fn
+    pi_fn = policy(pi_model)
+    v_fn = mlp_value_network(v_model)
+
+    return pi_model, pi_fn, v_model, v_fn
 
 
-def mlp_value_network(x, hidden_sizes=[32], activation=tf.tanh, output_activation=None):
+def mlp_value_network(v_model):
     """
-    Create a fully-connected value (critic) neural network.
+    Create functions for value (critic) neural network.
 
     Arguments:
-        x : input placeholder
-        hidden_sizes : list of number of units per layer in order (including output layer)
-        activation : tf activation function to use for hidden layers
-        output_activation : tf activation functions to use for output layer
+        v_model : keras value network
 
     Returns:
-        v_model : keras value network
         v_fn : keras function for getting value for given input
     """
-    v_model = mlp(x, 1, hidden_sizes, activation, output_activation)
-    v_predict = tf.squeeze(v_model.output, axis=1)
-    v_fn = K.function(inputs=[x], outputs=[v_predict])
-    return v_model, v_fn
+    @tf.function
+    def model_query(o):
+        return tf.squeeze(v_model(o), axis=1)
+
+    def v_fn(o):
+        return model_query(o).numpy()
+    return v_fn
 
 
-def mlp_actor(x, a, action_space, hidden_sizes=[32], activation=tf.tanh,
-              output_activation=None):
+def mlp_actor(x, action_space, hidden_sizes=[32], activation=tf.tanh, output_activation=None):
     """
     Create a fully-connected policy (actor) neural network for a continuous or categorical policy.
 
     Arguments:
         x : input placeholder
-        a : action taken placeholder
         action_space : action space gym.space object for environment
         hidden_sizes : list of number of units per layer in order (including output layer)
         activation : tf activation function to use for hidden layers
@@ -125,72 +132,53 @@ def mlp_actor(x, a, action_space, hidden_sizes=[32], activation=tf.tanh,
         raise NotImplementedError
 
     act_dim = utils.get_dim_from_space(action_space)
-    return policy(x, a, act_dim, hidden_sizes, activation, output_activation)
+    pi_model, _ = mlp(x, x, act_dim, hidden_sizes, activation, output_activation)
+    pi_fn = policy(pi_model)
+    return pi_model, pi_fn
 
 
-def mlp_categorical_policy(x, a, act_dim, hidden_sizes=[64], activation=tf.tanh,
-                           output_activation=None):
+def mlp_categorical_policy(model):
     """
-    Create a fully-connected neural network for a categorical policy
+    Create functons for a categorical policy
 
     Arguments:
-        x : input placeholder
-        a : action taken placeholder
-        act_dim : dimensions of action space
-        hidden_sizes : list of number of units per layer in order (including output layer)
-        activation : tf activation function to use for hidden layers
-        output_activation : tf activation functions to use for outq layer
+        model : keras policy model
 
     Returns:
-        model : keras policy model
         action_fn : action selection function
-        log_probs : log probabilities tensor of policy actions
     """
-    model = mlp(x, act_dim, hidden_sizes, activation, output_activation)
+    return policy_fn.discrete_pg(model)
+
+
+def mlp_gaussian_policy(model):
+    """
+    Create functions for a continuous policy
+
+    Arguments:
+        model : keras policy model
+
+    Returns:
+        action_fn : action selection function
+    """
     # log probs for calculating loss
-    action_mask = K.one_hot(a, act_dim)
-    log_probs = tf.reduce_sum(action_mask * tf.nn.log_softmax(model.output), axis=1)
+    # log_std = tf.Variable(-0.5*np.ones(act_dim, dtype=np.float32), trainable=False)
+    # log_probs = gaussian_likelihood(a, model.output, log_std)
     # action selection function
-    act_predict = tf.squeeze(tf.random.categorical(model.output, 1), axis=1)
-    action_fn = K.function(inputs=[x], outputs=[act_predict])
-    return model, action_fn, log_probs
+    # std = tf.exp(log_std)
+    # act_predict = model.output + tf.random.normal(tf.shape(model.output)) * std
+    # action_fn = K.function(inputs=[x], outputs=[act_predict])
+    # return action_fn, log_probs
+    return policy_fn.continuous_pg(model)
 
 
-def mlp_gaussian_policy(x, a, act_dim, hidden_sizes=[64], activation=tf.tanh,
-                        output_activation=None):
-    """
-    Create a fully-connected neural network for a continuous policy
-
-    Arguments:
-        x : input placeholder
-        a : output placeholder
-        act_dim : dimensions of action space
-        hidden_sizes : list of number of units per layer in order (including output layer)
-        activation : tf activation function to use for hidden layers
-        output_activation : tf activation functions to use for outq layer
-
-    Returns:
-        model : keras policy model
-        action_fn : action selection function
-        log_probs : log probabilities tensor of policy actions
-    """
-    model = mlp(x, act_dim, hidden_sizes, activation, output_activation)
-
-    log_std = tf.Variable(-0.5*np.ones(act_dim, dtype=np.float32), trainable=False)
-    log_probs = gaussian_likelihood(a, model.output, log_std)
-
-    std = tf.exp(log_std)
-    act_predict = model.output + tf.random.normal(tf.shape(model.output)) * std
-    action_fn = K.function(inputs=[x], outputs=[act_predict])
-    return model, action_fn, log_probs
-
-
-def mlp(obs_ph, output_size, hidden_sizes=[64], activation=tf.tanh, output_activation=None):
+def mlp(model_input, first_layer, output_size, hidden_sizes=[64], activation=tf.tanh, output_activation=None):
     """
     Creates a fully connected neural network
 
     Arguments:
-        obs_ph : K placeholder input to network
+        model_input : Keras.Input to network
+        first_layer : first input into network, this can be Keras.Input or a Keras.layer
+            (will be same as model_input if not using layer from another network)
         output_size : number of neurons in output layer
         hidden_sizes : ordered list of size of each hidden layer
         activation : tf or K activation function for hidden layers
@@ -198,12 +186,14 @@ def mlp(obs_ph, output_size, hidden_sizes=[64], activation=tf.tanh, output_activ
 
     Returns:
         model : tf.keras model
+        last_hidden_layer : tf.Layer final hidden layer
     """
-    x = obs_ph
+    x = first_layer
     for size in hidden_sizes:
         x = layers.Dense(size, activation=activation)(x)
+    last_hidden_layer = x
     acts_ph = layers.Dense(output_size, activation=output_activation)(x)
-    return Model(inputs=obs_ph, outputs=acts_ph)
+    return Model(inputs=model_input, outputs=acts_ph), last_hidden_layer
 
 
 def gaussian_likelihood(x, mu, log_std):

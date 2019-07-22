@@ -7,18 +7,26 @@ Also provides functionality for saving and restoring a model
 Inspired heavily by OpenAI spinningup logger, which was in turn inspired by rllab's logging.
 """
 import os
+import gym
 import json
 import atexit
 import shutil
 import pickle
 import os.path as osp
-import tensorflow as tf
+
+from tensorflow.keras.models import load_model
+
+import rlalgs.algos.policy as policy_fn
 from rlalgs.utils.serialization_utils import convert_json
 
 
 DEFAULT_DIR = osp.join(osp.abspath(osp.dirname(osp.dirname(__file__))), 'data')
 OBS_NAME = "x"
 ACTS_NAME = "pi"
+
+# some constants to make saving and loading models easier
+ACTOR_MODEL_NAME = "policy"
+CRITIC_MODEL_NAME = "value"
 
 
 def setup_logger_kwargs(exp_name, data_dir=None, seed=None, verbose=True):
@@ -53,25 +61,40 @@ def setup_logger_kwargs(exp_name, data_dir=None, seed=None, verbose=True):
     return dict(output_dir=output_dir, exp_name=exp_name, verbose=verbose)
 
 
-def restore_model(sess, model_dir):
-    saver = tf.train.import_meta_graph(osp.join(model_dir, "model" + ".meta"))
-    saver.restore(sess, osp.join(model_dir, "model"))
-    graph = tf.get_default_graph()
+def restore_model(model_dir):
+    """
+    Loads a model from directory.
 
-    info_file = open(osp.join(model_dir, "exp_info.pkl"), "rb")
-    info = pickle.load(info_file)
-    info_file.close()
+    Arguments:
+        str model_dir : model directory path
 
-    model_vars = dict()
-    model_vars["inputs"] = {k: graph.get_tensor_by_name(v) for k, v in info["inputs"].items()}
-    model_vars["outputs"] = {k: graph.get_tensor_by_name(v) for k, v in info["outputs"].items()}
-    return model_vars
+    Returns:
+        pi_model : tf.Keras policy/actor model
+        v_model : tf.Keras value/critic model (may be None, depending on algorithm)
+        pi_fn : the action selection function
+    """
+
+    with open(osp.join(model_dir, "exp_info.pkl"), "rb") as info_file:
+        info = pickle.load(info_file)
+
+    models = {}
+    for model_name in info["model_names"]:
+        models[model_name] = load_model(osp.join(model_dir, model_name + ".h5"))
+
+    pi_model = models[ACTOR_MODEL_NAME]
+    v_model = models.get(CRITIC_MODEL_NAME)
+
+    env = gym.make(info["env"])
+    alg_type = info["alg_type"]
+    pi_fn_wrapper = policy_fn.get_policy_fn(env, alg_type)
+    pi_fn = pi_fn_wrapper(pi_model)
+
+    return pi_model, v_model, pi_fn
 
 
 def get_env_name(model_dir):
-    info_file = open(osp.join(model_dir, "exp_info.pkl"), "rb")
-    info = pickle.load(info_file)
-    info_file.close()
+    with open(osp.join(model_dir, "exp_info.pkl"), "rb") as info_file:
+        info = pickle.load(info_file)
     return info["env"]
 
 
@@ -143,30 +166,39 @@ class Logger:
         """
         assert hasattr(self, "tf_saver_elements"), \
             "First have to setup model saving with self.setup_tf_model_saver, before saving model"
-        saver = tf.train.Saver()
-        sess = self.tf_saver_elements["session"]
         base_model_dir = self.tf_saver_elements["base_model_dir"]
         model_dir = base_model_dir if itr is None else base_model_dir + str(itr)
         if osp.exists(model_dir):
             shutil.rmtree(model_dir)
-        # save model
-        saver.save(sess, osp.join(model_dir, "model"))
+        os.makedirs(model_dir)
+        # save models
+        for model_name, model in self.tf_saver_elements["models"].items():
+            model.save(osp.join(model_dir, model_name + ".h5"))
         # save model info
-        info_file = open(osp.join(model_dir, "exp_info.pkl"), "wb")
-        pickle.dump(self.tf_model_info, info_file)
-        info_file.close()
+        with open(osp.join(model_dir, "exp_info.pkl"), "wb") as info_file:
+            pickle.dump(self.tf_model_info, info_file)
 
-    def setup_tf_model_saver(self, sess, env, inputs, outputs):
+    def setup_tf_model_saver(self, pi_model, env, alg_type, v_model=None):
         """
-        Set up model saver info
-
+        Set up model saver info.
         This should be called before save_model.
+
+        Arguments:
+            pi_model : the policy/actor model
+            env : gym environment
+            alg_type : the algorithm type ("pg", "ql")
+            v_model : the value/critic model (default is None, if not saving critic or
+                algorithm doesn't use one)
         """
+        assert alg_type in policy_fn.VALID_ALG_TYPES
         base_model_dir = osp.join(self.output_dir, "simple_save")
-        self.tf_saver_elements = dict(session=sess, base_model_dir=base_model_dir)
+        models = {ACTOR_MODEL_NAME: pi_model}
+        if v_model is not None:
+            models[CRITIC_MODEL_NAME] = v_model
+        self.tf_saver_elements = dict(models=models, base_model_dir=base_model_dir)
         self.tf_model_info = {'env': env.spec.id,
-                              "inputs": {k: v.name for k, v in inputs.items()},
-                              "outputs": {k: v.name for k, v in outputs.items()}}
+                              'alg_type': alg_type,
+                              'model_names': list(models.keys())}
 
     def log_tabular(self, key, value):
         """
