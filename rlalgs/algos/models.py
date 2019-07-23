@@ -32,15 +32,16 @@ def q_network(x, action_space, hidden_sizes=[64], activation=tf.nn.relu,
             q value corresponding to action 'a' and input 'x'
     """
     act_dim = utils.get_dim_from_space(action_space)
-    q_model = mlp(x, act_dim, hidden_sizes, activation, output_activation)
+    q_model, _ = mlp(x, x, act_dim, hidden_sizes, activation, output_activation)
 
     pi_fn = policy_fn.discrete_qlearning(q_model)
 
     @tf.function
     def q_fn(a, o):
-        q_pi = tf.reduce_max(q_model(o), axis=-1)
-        action_mask = tf.one_hot(a, act_dim)
-        act_q_val = tf.reduce_sum(action_mask * q_pi, axis=-1)
+        q_raw = q_model(o)
+        q_pi = tf.reduce_max(q_raw, axis=-1)
+        action_mask = tf.one_hot(tf.cast(a, tf.int32), act_dim)
+        act_q_val = tf.reduce_sum(action_mask * q_raw, axis=-1)
         return q_pi, act_q_val
 
     return q_model, pi_fn, q_fn

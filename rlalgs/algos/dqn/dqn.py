@@ -4,20 +4,17 @@ Deep Q-Network implementation using tensorflow
 import gym
 import time
 import numpy as np
-import tensorflow as tf
 from gym.spaces import Discrete
-import rlalgs.utils.logger as log
-import rlalgs.utils.utils as utils
-import tensorflow.keras.backend as K
-import rlalgs.algos.dqn.core as core
+
+import tensorflow as tf
 import tensorflow.keras.layers as layers
-from rlalgs.algos.models import q_network
-import rlalgs.utils.preprocess as preprocess
 import tensorflow.keras.optimizers as optimizers
 
-# Just disables the warning, doesn't enable AVX/FMA
-import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+import rlalgs.utils.logger as log
+import rlalgs.utils.utils as utils
+import rlalgs.algos.dqn.core as core
+from rlalgs.algos.models import q_network
+import rlalgs.utils.preprocess as preprocess
 
 
 def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, batch_size=32,
@@ -79,6 +76,13 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
     num_actions = utils.get_dim_from_space(env.action_space)
     act_dim = env.action_space.shape
 
+    print("Initializing buffer")
+    buf = core.DQNReplayBuffer(obs_dim, act_dim, replay_size)
+
+    epsilon_schedule = np.linspace(1, epsilon, start_steps)
+    global total_t
+    total_t = 0
+
     print("Building network")
     obs_ph = layers.Input(shape=(obs_dim, ))
     obs_prime_ph = layers.Input(shape=(obs_dim, ))
@@ -87,18 +91,27 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
     done_ph = utils.get_placeholder(tf.float32, shape=(None, ))
 
     # main network
-    q_model, pi_fn, q_pi, act_q_val = q_network(obs_ph, act_ph, env.action_space, hidden_sizes)
+    q_model, pi_fn, q_fn = q_network(obs_ph, env.action_space, hidden_sizes)
     # target network
-    q_model_targ, pi_fn_targ, q_pi_targ, _ = q_network(obs_prime_ph, act_ph, env.action_space, hidden_sizes)
+    q_model_targ, pi_fn_targ, q_fn_targ = q_network(obs_prime_ph, env.action_space, hidden_sizes)
 
     print("Setting up training ops")
-    target = rew_ph + gamma*(1-done_ph)*q_pi_targ
-    q_loss = tf.reduce_mean((tf.stop_gradient(target) - act_q_val)**2)
-
-    # Training ops
     q_optimizer = optimizers.Adam(learning_rate=lr)
-    q_updates = q_optimizer.get_updates(q_loss, q_model.trainable_weights)
-    q_train_fn = K.function([obs_ph, obs_prime_ph, act_ph, rew_ph, done_ph], [q_loss], updates=q_updates)
+
+    @tf.function
+    def q_loss(target_q_val, act_q_val, done, rew):
+        target = rew + gamma*(1-done)*target_q_val
+        return tf.reduce_mean((tf.stop_gradient(target) - act_q_val)**2)
+
+    @tf.function
+    def get_grads_and_apply(obs, obs_prime, acts, rews, dones):
+        with tf.GradientTape() as tape:
+            target_q_val, _ = q_fn_targ(acts, obs_prime)
+            _, act_q_val = q_fn(acts, obs)
+            loss = q_loss(target_q_val, act_q_val, dones, rews)
+        grads = tape.gradient(loss, q_model.trainable_variables)
+        q_optimizer.apply_gradients(zip(grads, q_model.trainable_variables))
+        return loss
 
     print("Setting up main and target network copying")
 
@@ -108,34 +121,26 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
 
     copy_network_weights()
 
-    print("Initializing buffer")
-    buf = core.DQNReplayBuffer(obs_dim, act_dim, replay_size)
+    def update(t):
+        batch = buf.sample(batch_size)
+        loss = get_grads_and_apply(batch['o'], batch["o_prime"], batch["a"], batch["r"], batch["d"])
 
-    epsilon_schedule = np.linspace(1, epsilon, start_steps)
-    global total_t
-    total_t = 0
+        if t > 0 and (target_update_freq == 1 or t % (target_update_freq-1) == 0):
+            # if t == epoch_steps-1:
+            #     logger.log_tabular("ntwk_diff", network_diff())
+            copy_network_weights()
+        return loss.numpy()
 
-    # logger.setup_tf_model_saver(sess, env, {log.OBS_NAME: obs_ph}, {log.ACTS_NAME: pi})
+    print("Setting up model saver")
+    logger.setup_tf_model_saver(q_model, env, "ql")
 
     def get_action(o, t):
         eps = epsilon if t >= start_steps else epsilon_schedule[t]
         if np.random.rand(1) < eps:
             a = np.random.choice(num_actions)
         else:
-            a = pi_fn(o.reshape(1, -1))[0]
+            a = pi_fn(o)
         return np.squeeze(a, axis=-1)
-
-    def update(t):
-        batch = buf.sample(batch_size)
-        feed_list = [batch['o'], batch["o_prime"], batch["a"], batch["r"], batch["d"]]
-        batch_loss = q_train_fn(feed_list)
-
-        if t > 0 and (target_update_freq == 1 or t % (target_update_freq-1) == 0):
-            if t == epoch_steps-1:
-                logger.log_tabular("ntwk_diff", network_diff())
-            copy_network_weights()
-
-        return batch_loss
 
     def network_diff():
         """ Calculates difference between networks """
@@ -196,8 +201,11 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
         epoch_start = time.time()
         results = train_one_epoch()
         epoch_time = time.time() - epoch_start
+
         total_epoch_times += epoch_time
         total_episodes += len(results[2])
+        training_time_left = utils.training_time_left(i, epochs, epoch_time)
+
         logger.log_tabular("q_loss", np.mean(results[0]))
         logger.log_tabular("avg_return", np.mean(results[1]))
         logger.log_tabular("avg_ep_lens", np.mean(results[2]))
@@ -206,14 +214,13 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
         logger.log_tabular("end_epsilon", epsilon if total_t >= start_steps else epsilon_schedule[total_t])
         logger.log_tabular("epoch_time", epoch_time)
         logger.log_tabular("mem_usage", utils.get_current_mem_usage())
-        training_time_left = utils.training_time_left(i, epochs, epoch_time)
         logger.log_tabular("time_rem", training_time_left)
 
         logger.dump_tabular()
 
-        # if (save_freq != 0 and i % save_freq == 0) or i == epochs-1:
-        #     itr = None if overwrite_save else i
-        #     logger.save_model(itr)
+        if (save_freq != 0 and i % save_freq == 0) or i == epochs-1:
+            itr = None if overwrite_save else i
+            logger.save_model(itr)
 
     if render_last:
         input("Press enter to view final policy in action")
@@ -223,7 +230,7 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
         while not finished_rendering_this_epoch:
             env.render()
             o = preprocess_fn(o, env)
-            a = np.squeeze(pi_fn(o.reshape(1, -1))[0], axis=-1)
+            a = pi_fn(o)
             o, r, d, _ = env.step(a)
             final_ret += r
             if d:
