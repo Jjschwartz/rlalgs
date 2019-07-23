@@ -46,7 +46,7 @@ def q_network(x, action_space, hidden_sizes=[64], activation=tf.nn.relu,
     return q_model, pi_fn, q_fn
 
 
-def mlp_actor_critic(x, a, action_space, hidden_sizes=[64], activation=tf.tanh,
+def mlp_actor_critic(x, action_space, hidden_sizes=[64], activation=tf.tanh,
                      output_activation=None, share_layers=False):
     """
     Create fully-connected policy (actor) and value (critic) networks for a continuous or
@@ -54,7 +54,6 @@ def mlp_actor_critic(x, a, action_space, hidden_sizes=[64], activation=tf.tanh,
 
     Arguments:
         x : input placeholder
-        a : action taken placeholder
         action_space : action space gym.space object for environment
         hidden_sizes : list of number of units per layer in order (including output layer)
         activation : tf activation function to use for hidden layers
@@ -104,7 +103,8 @@ def mlp_value_network(v_model):
         return tf.squeeze(v_model(o), axis=1)
 
     def v_fn(o):
-        return model_query(o).numpy()
+        v_tensor = model_query(o.reshape(1, -1))
+        return np.squeeze(v_tensor, axis=-1)
     return v_fn
 
 

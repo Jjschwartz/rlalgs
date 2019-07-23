@@ -13,8 +13,8 @@ N.B. some of the code is extra verbose to help with understanding
 import gym
 import time
 import numpy as np
+
 import tensorflow as tf
-import tensorflow.keras.backend as K
 import tensorflow.keras.layers as layers
 import tensorflow.keras.optimizers as optimizers
 

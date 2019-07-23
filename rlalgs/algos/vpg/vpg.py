@@ -6,19 +6,16 @@ Based off of OpenAI spinning up tutorial.
 import gym
 import time
 import numpy as np
+
 import tensorflow as tf
+import tensorflow.keras.layers as layers
+import tensorflow.keras.optimizers as optimizers
+
 import rlalgs.utils.logger as log
 import rlalgs.utils.utils as utils
-import tensorflow.keras.backend as K
-import tensorflow.keras.layers as layers
 import rlalgs.utils.preprocess as preprocess
-import tensorflow.keras.optimizers as optimizers
 from rlalgs.algos.models import mlp_actor_critic
 from rlalgs.algos.vpg.core import VPGReplayBuffer
-
-# Just disables the warning, doesn't enable AVX/FMA
-import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 
 def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs=50,
@@ -61,45 +58,61 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
 
     if obs_dim is None:
         obs_dim = utils.get_dim_from_space(env.observation_space)
+    num_actions = utils.get_dim_from_space(env.action_space)
     act_dim = env.action_space.shape
-
-    print("Building network")
-    obs_ph = layers.Input(shape=(obs_dim,))
-    act_ph = utils.placeholder_from_space(env.action_space)
-    ret_ph = utils.get_placeholder(tf.float32, shape=(None, ))
-    adv_ph = utils.get_placeholder(tf.float32, shape=(None, ))
-
-    pi_model, pi_fn, pi_logp, v_model, v_fn = mlp_actor_critic(
-        obs_ph, act_ph, env.action_space, hidden_sizes=hidden_sizes)
-
-    print("Setup training ops - actor")
-    pi_loss = -tf.reduce_mean(pi_logp * adv_ph)
-    pi_train_op = optimizers.Adam(learning_rate=pi_lr)
-    pi_updates = pi_train_op.get_updates(pi_loss, pi_model.trainable_weights)
-    pi_train_fn = K.function([obs_ph, act_ph, adv_ph], [pi_loss], updates=pi_updates)
-
-    print("Setup training ops - critic")
-    v_loss = tf.reduce_mean((ret_ph - v_model.output)**2)
-    print("Setup training ops - 1")
-    v_train_op = optimizers.Adam(learning_rate=v_lr)
-    print("Setup training ops - 2")
-    v_updates = v_train_op.get_updates(v_loss, v_model.trainable_weights)
-    print("Setup training ops - 3")
-    v_train_fn = K.function([v_model.input, ret_ph], [v_loss], updates=v_updates)
-    print("Setup training ops - 4")
 
     print("Initializing Replay Buffer")
     buf = VPGReplayBuffer(obs_dim, act_dim, batch_size, gamma=gamma, adv_fn="gae")
 
-    # logger.setup_tf_model_saver(sess, env, {log.OBS_NAME: obs_ph}, {log.ACTS_NAME: pi})
+    print("Building network")
+    obs_ph = layers.Input(shape=(obs_dim,))
 
-    def get_action(o):
-        action = pi_fn([o])[0]
-        return np.squeeze(action, axis=-1)
+    pi_model, pi_fn, v_model, v_fn = mlp_actor_critic(
+        obs_ph, env.action_space, hidden_sizes, share_layers=True)
 
-    def get_value(o):
-        val = v_fn([o])[0]
-        return np.squeeze(val, axis=-1)
+    print("Model summaries")
+    print("Actor model")
+    print(pi_model.summary())
+    print("\nCritic model")
+    print(v_model.summary())
+
+    print("Setup training ops - actor")
+    pi_train_op = optimizers.Adam(learning_rate=pi_lr)
+
+    @tf.function
+    def policy_loss(a_pred, a_taken, a_adv):
+        action_mask = tf.one_hot(tf.cast(a_taken, tf.int32), num_actions)
+        log_probs = tf.reduce_sum(action_mask * tf.nn.log_softmax(a_pred), axis=1)
+        return -tf.reduce_mean(log_probs * a_adv)
+
+    print("Setup training ops - critic")
+    v_train_op = optimizers.Adam(learning_rate=v_lr)
+
+    @tf.function
+    def value_loss(o_val, o_ret):
+        return tf.reduce_mean((o_ret - o_val)**2)
+
+    @tf.function
+    def get_grads(batch_obs, batch_acts, batch_rets, batch_adv):
+        with tf.GradientTape(persistent=True) as tape:
+            a_pred = pi_model(batch_obs)
+            o_val = v_model(batch_obs)
+            pi_loss = policy_loss(a_pred, batch_acts, batch_adv)
+            v_loss = value_loss(o_val, batch_rets)
+        pi_grads = tape.gradient(pi_loss, pi_model.trainable_variables)
+        v_grads = tape.gradient(v_loss, v_model.trainable_variables)
+        return pi_loss, pi_grads, v_loss, v_grads
+
+    @tf.function
+    def update(batch_obs, batch_acts, batch_rets, batch_adv):
+        pi_loss, pi_grads, v_loss, v_grads = get_grads(
+            batch_obs, batch_acts, batch_rets, batch_rets)
+        pi_train_op.apply_gradients(zip(pi_grads, pi_model.trainable_variables))
+        v_train_op.apply_gradients(zip(v_grads, v_model.trainable_variables))
+        return pi_loss, v_loss
+
+    print("Setting up model saver")
+    logger.setup_tf_model_saver(pi_model, env, "pg", v_model)
 
     def train_one_epoch():
         o, r, d = env.reset(), 0, False
@@ -113,8 +126,8 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
                 env.render()
 
             o = preprocess_fn(o, env)
-            a = get_action(o.reshape(1, -1))
-            v_t = get_value(o.reshape(1, -1))
+            a = pi_fn(o)
+            v_t = v_fn(o)
             buf.store(o, a, r, v_t)
             o, r, d, _ = env.step(a)
 
@@ -129,7 +142,7 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
                     last_val = r
                 else:
                     o = preprocess_fn(o, env)
-                    last_val = get_value(o.reshape(1, -1))
+                    last_val = v_fn(o)
                 buf.finish_path(last_val)
 
                 o, r, d = env.reset(), 0, False
@@ -141,36 +154,33 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
                     break
 
         batch_obs, batch_acts, batch_adv, batch_rets, batch_vals = buf.get()
-        pi_l = pi_train_fn([batch_obs, batch_acts, batch_adv])[0]
-        v_l = v_train_fn([batch_obs, batch_rets])[0]
-        return pi_l, v_l, batch_ep_rets, batch_ep_lens
+        pi_loss, v_loss = update(batch_obs, batch_acts, batch_rets, batch_adv)
+        return pi_loss.numpy(), v_loss.numpy(), batch_ep_rets, batch_ep_lens
 
-    total_epoch_times = 0
-    avg_epoch_returns = []
+    total_training_time = 0
     total_episodes = 0
     for i in range(epochs):
         epoch_start = time.time()
         results = train_one_epoch()
+
         epoch_time = time.time() - epoch_start
-        total_epoch_times += epoch_time
+        total_training_time += epoch_time
         avg_return = np.mean(results[2])
         total_episodes += len(results[3])
+
         logger.log_tabular("epoch", i)
         logger.log_tabular("pi_loss", results[0])
         logger.log_tabular("v_loss", results[1])
         logger.log_tabular("avg_return", avg_return)
         logger.log_tabular("avg_ep_lens", np.mean(results[3]))
-        logger.log_tabular("total_eps", total_episodes)
         logger.log_tabular("epoch_time", epoch_time)
-        logger.log_tabular("mem_usage", utils.get_current_mem_usage())
-        avg_epoch_returns.append(avg_return)
+        logger.log_tabular("total_eps", total_episodes)
+        logger.log_tabular("total_time", total_training_time)
         logger.dump_tabular()
 
-        # if (save_freq != 0 and i % save_freq == 0) or i == epochs-1:
-        #     itr = None if overwrite_save else i
-        #     logger.save_model(itr)
-
-    print("Average epoch time = ", total_epoch_times/epochs)
+        if (save_freq != 0 and i % save_freq == 0) or i == epochs-1:
+            itr = None if overwrite_save else i
+            logger.save_model(itr)
 
     if render_last:
         input("Press enter to view final policy in action")
@@ -180,14 +190,12 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
         while not finished_rendering_this_epoch:
             env.render()
             o = preprocess_fn(o, env)
-            a = get_action(o.reshape(1, -1))
+            a = pi_fn(o)
             o, r, d, _ = env.step(a)
             final_ret += r
             if d:
                 finished_rendering_this_epoch = True
         print("Final return: %.3f" % (final_ret))
-
-    return {"avg_epoch_returns": avg_epoch_returns}
 
 
 if __name__ == "__main__":
@@ -214,4 +222,4 @@ if __name__ == "__main__":
     vpg(lambda: gym.make(args.env), epochs=args.epochs, batch_size=args.batch_size,
         hidden_sizes=[args.hid]*args.layers, pi_lr=args.pi_lr, v_lr=args.v_lr, gamma=args.gamma,
         seed=args.seed, render=args.render, render_last=args.renderlast,
-        logger_kwargs=logger_kwargs, save_freq=2, overwrite_save=False)
+        logger_kwargs=logger_kwargs)
