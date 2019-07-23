@@ -6,6 +6,7 @@ import sys
 import subprocess
 import numpy as np
 from mpi4py import MPI
+
 import tensorflow as tf
 
 
@@ -48,10 +49,9 @@ def print_msg(msg, context=""):
     print("Message from %d - %s: %s" % (proc_id(), context, str(msg)))
 
 
-def sync_all_params(root=0):
+def sync_all_params(params, root=0):
     """ Sets all parameters across all processes to equal those of root process """
-    global_vars = tf.global_variables()
-    return sync_params(global_vars, root)
+    return sync_params(params, root)
 
 
 def sync_params(params, root=0):
@@ -81,10 +81,11 @@ def flat_concat(params):
 
 def tf_broadcast(x, root=0):
     """ Creates function for syncing x from root process to all other processes """
+    @tf.function
     def _broadcast(x):
         broadcast(x)
         return x
-    return tf.py_func(_broadcast, [x], tf.float32)
+    return _broadcast(x)
 
 
 def broadcast(x, root=0):
@@ -92,7 +93,7 @@ def broadcast(x, root=0):
     MPI.COMM_WORLD.Bcast(x, root=root)
 
 
-class MPIAdamOptimizer(tf.train.AdamOptimizer):
+class MPIAdamOptimizer(tf.keras.optimizers.Adam):
     """
     The AdamOptimizer which handles multiprocessor gradient descent:
 
@@ -104,56 +105,42 @@ class MPIAdamOptimizer(tf.train.AdamOptimizer):
 
     def __init__(self, **kwargs):
         self.comm = MPI.COMM_WORLD
-        tf.train.AdamOptimizer.__init__(self, **kwargs)
+        tf.keras.optimizers.Adam.__init__(self, **kwargs)
 
-    def compute_gradients(self, loss, var_list, **kwargs):
+    def get_gradients(self, loss, params):
         """
-        Computes gradients, averaging gradients over processes
+        Get gradients, averaging gradients over processes
         """
-        # 1. Get local gradients
-        grads_and_vars = super().compute_gradients(loss, var_list, **kwargs)
-        # 2. Ignore variables that have no gradient since var_list, contains all train vars
-        grads_and_vars = [(g, v) for g, v in grads_and_vars if g is not None]
+        # 1. Get local updates
+        grads = super().get_gradients(loss, params)
 
-        # 3. Accumulate gradients across all processes
-        flat_grad = flat_concat([g for g, v in grads_and_vars])
+        print("grads", grads)
+
+        # 2. Accumulate gradients across all processes
+        flat_grads = flat_concat([g for g in grads])
         num_tasks = self.comm.Get_size()
         # buffer to store accumulated 1D grad tensor
-        buf = np.zeros(flat_grad.shape, np.float32)
+        buf = np.zeros(flat_grads.shape, np.float32)
 
-        def _collect_grads(flat_grad):
+        print("\nflat_grads", flat_grads)
+        print("buf", buf)
+
+        def _collect_gradients(flat_gradients):
             # Sum grads across all processes
-            self.comm.Allreduce(flat_grad, buf, op=MPI.SUM)
+            self.comm.Allreduce(flat_gradients, buf, op=MPI.SUM)
             # Average by dividing by number of processes
             np.divide(buf, float(num_tasks), out=buf)
             return buf
 
         # define the tf function for graph
-        avg_flat_grad = tf.py_func(_collect_grads, [flat_grad], tf.float32)
+        avg_flat_grads = tf.py_function(_collect_gradients, inp=[flat_grads], Tout=tf.float32)
 
         # 4. Reconstruct original grad tensors from accumulated 1D synced tensor
         # get sizes of OG grad tensors for reconstruction latter
-        shapes = [v.shape.as_list() for g, v in grads_and_vars]
+        shapes = [u.shape.as_list() for u in grads]
         sizes = [int(np.prod(s)) for s in shapes]
         # ensure correct flat shape
-        avg_flat_grad.set_shape(flat_grad.shape)
+        avg_flat_grads.set_shape(flat_grads.shape)
         # split into OG flat tensor shapes
-        avg_grads = tf.split(avg_flat_grad, sizes, axis=0)
-        # reshape into OG shape and pair with OG var
-        avg_grads_and_vars = [(tf.reshape(g, v.shape), v)
-                              for g, (_, v) in zip(avg_grads, grads_and_vars)]
-
-        return avg_grads_and_vars
-
-    def apply_gradients(self, grads_and_vars, global_step=None, name=None):
-        """
-        Apply gradients to model and synce model across all processes
-        """
-        # grads_and_vars are already accumulated from all processes, so just apply
-        # to local model using normal AdamOptimizer
-        opt = super().apply_gradients(grads_and_vars, global_step, name)
-        # control_dependencies just specifies that operation opt (i.e. apply gradients)
-        # must be applied before the enclosed operations (i.e. syncing params)
-        with tf.control_dependencies([opt]):
-            sync = sync_params([v for g, v in grads_and_vars])
-        return tf.group([opt, sync])
+        avg_grads = tf.split(avg_flat_grads, sizes, axis=0)
+        return avg_grads
