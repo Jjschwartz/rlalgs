@@ -27,7 +27,8 @@ from rlalgs.utils.logger import Logger, setup_logger_kwargs
 
 def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=2000,
              seed=0, render=False, render_last=False, logger_kwargs=dict(),
-             return_fn="simple"):
+             return_fn="simple", preprocess_fn=None, obs_dim=None, save_freq=10,
+             overwrite_save=True):
     """
     Simple Policy Gradient
 
@@ -42,6 +43,12 @@ def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=2000,
     render : whether to render environment or not
     render_last : whether to render environment after final epoch
     logger_kwargs : dictionary of keyword arguments for logger
+    save_freq : number of epochs between model saves (always atleast saves at end of training)
+    overwrite_save : whether to overwrite last saved model or save in new dir
+    preprocess_fn : the preprocess function for observation. (If None then no preprocessing is
+        done apart for handling reshaping for discrete observation spaces)
+    obs_dim : dimensions for observations (if None then dimensions extracted from environment
+        observation space)
     """
     print("Setting seeds")
     tf.random.set_seed(seed)
@@ -51,9 +58,14 @@ def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=2000,
     logger = Logger(**logger_kwargs)
     logger.save_config(locals())
 
+    if preprocess_fn is None:
+        preprocess_fn = preprocess.preprocess_obs
+
     print("Initializing environment")
     env = env_fn()
-    obs_dim = utils.get_dim_from_space(env.observation_space)
+
+    if obs_dim is None:
+        obs_dim = utils.get_dim_from_space(env.observation_space)
     num_actions = utils.get_dim_from_space(env.action_space)
 
     print("Initializing Replay Buffer")
@@ -61,20 +73,32 @@ def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=2000,
 
     print("Building network")
     obs_ph = layers.Input(shape=(obs_dim,))
-    act_ph = utils.placeholder_from_space(env.action_space)
-    ret_ph = utils.get_placeholder(tf.float32, shape=(None,))
-
-    model, act_fn, log_probs = mlp_actor(obs_ph, act_ph, env.action_space, hidden_sizes)
+    pi_model, pi_fn = mlp_actor(obs_ph, env.action_space, hidden_sizes)
 
     print("Setup training ops")
-    loss = -tf.reduce_mean(log_probs * ret_ph)
     train_op = optimizers.Adam(learning_rate=lr)
-    updates = train_op.get_updates(loss, model.trainable_weights)
-    train_fn = K.function(inputs=[model.input, act_ph, ret_ph], outputs=[loss], updates=updates)
 
-    def get_action(obs):
-        action = act_fn([obs])[0]
-        return np.squeeze(action, axis=-1)
+    @tf.function
+    def policy_loss(a_pred, a_taken, a_ret):
+        action_mask = tf.one_hot(tf.cast(a_taken, tf.int32), num_actions)
+        log_probs = tf.reduce_sum(action_mask * tf.nn.log_softmax(a_pred), axis=1)
+        return -tf.reduce_mean(log_probs * a_ret)
+
+    @tf.function
+    def get_grads(obs, a_taken, a_ret):
+        with tf.GradientTape() as tape:
+            a_pred = pi_model(obs)
+            loss = policy_loss(a_pred, a_taken, a_ret)
+        return loss, tape.gradient(loss, pi_model.trainable_variables)
+
+    @tf.function
+    def update(batch_obs, batch_acts, batch_rets):
+        loss, grads = get_grads(batch_obs, batch_acts, batch_rets)
+        train_op.apply_gradients(zip(grads, pi_model.trainable_variables))
+        return loss
+
+    print("Setting up model saver")
+    logger.setup_tf_model_saver(pi_model, env, "pg")
 
     def train_one_epoch():
         interaction_start = time.time()
@@ -82,7 +106,7 @@ def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=2000,
 
         o, r, d = env.reset(), 0, False
         finished_rendering_this_epoch = False
-        # for progress reporting
+
         ep_len, ep_ret = 0, 0
         batch_ep_lens, batch_ep_rets = [], []
         t = 0
@@ -92,10 +116,10 @@ def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=2000,
             if not finished_rendering_this_epoch and render:
                 env.render()
 
-            o = preprocess.preprocess_obs(o, env)
+            o = preprocess_fn(o, env)
 
             a_t = time.time()
-            a = get_action(o.reshape(1, -1))
+            a = pi_fn(o)
             get_action_time += (time.time() - a_t)
 
             buf.store(o, a, r)
@@ -120,21 +144,35 @@ def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=2000,
 
         train_start = time.time()
         batch_obs, batch_acts, batch_rets = buf.get()
-        batch_loss = train_fn([batch_obs, batch_acts, batch_rets])[0]
+        batch_loss = update(batch_obs, batch_acts, batch_rets)
         print(f"Train time = {time.time() - train_start:.5f}")
         print(f"Get_action time = {get_action_time / t:.5f}")
-        print(f"Get_action_time total = {get_action_time}")
 
-        return batch_loss, batch_ep_rets, batch_ep_lens
+        return batch_loss.numpy(), batch_ep_rets, batch_ep_lens
 
     print("Starting training")
+    total_training_time = 0
+    total_episodes = 0
     for i in range(epochs):
+        epoch_start = time.time()
         batch_loss, batch_ep_rets, batch_ep_lens = train_one_epoch()
+        epoch_time = time.time() - epoch_start
+
+        total_training_time += epoch_time
+        total_episodes += len(batch_ep_lens)
+
         logger.log_tabular("epoch", i)
-        logger.log_tabular("loss", batch_loss)
+        logger.log_tabular("pi_loss", batch_loss)
         logger.log_tabular("avg_return", np.mean(batch_ep_rets))
         logger.log_tabular("avg_ep_lens", np.mean(batch_ep_lens))
+        logger.log_tabular("epoch_time", epoch_time)
+        logger.log_tabular("total_eps", total_episodes)
+        logger.log_tabular("total_training_time", total_training_time)
         logger.dump_tabular()
+
+        if (save_freq != 0 and i % save_freq == 0) or i == epochs-1:
+            itr = None if overwrite_save else i
+            logger.save_model(itr)
 
     if render_last:
         input("Press enter to view final policy in action")
@@ -143,8 +181,8 @@ def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=2000,
         finished_rendering_this_epoch = False
         while not finished_rendering_this_epoch:
             env.render()
-            o = preprocess.preprocess_obs(o, env)
-            a = get_action(o.reshape(1, -1))
+            o = preprocess_fn(o, env)
+            a = pi_fn(o)
             o, r, d, _ = env.step(a)
             final_ret += r
             if d:
