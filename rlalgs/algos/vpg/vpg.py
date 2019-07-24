@@ -11,6 +11,7 @@ import tensorflow as tf
 import tensorflow.keras.layers as layers
 import tensorflow.keras.optimizers as optimizers
 
+import rlalgs.utils.mpi as mpi
 import rlalgs.utils.logger as log
 import rlalgs.utils.utils as utils
 import rlalgs.utils.preprocess as preprocess
@@ -104,11 +105,17 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
         return pi_loss, pi_grads, v_loss, v_grads
 
     @tf.function
+    def apply_gradients(pi_grads, v_grads):
+        pi_train_op.apply_gradients(zip(pi_grads, pi_model.trainable_variables))
+        v_train_op.apply_gradients(zip(v_grads, v_model.trainable_variables))
+
+    @tf.function
     def update(batch_obs, batch_acts, batch_rets, batch_adv):
         pi_loss, pi_grads, v_loss, v_grads = get_grads(
             batch_obs, batch_acts, batch_rets, batch_rets)
-        pi_train_op.apply_gradients(zip(pi_grads, pi_model.trainable_variables))
-        v_train_op.apply_gradients(zip(v_grads, v_model.trainable_variables))
+        avg_pi_grads = mpi.sync_gradients(pi_grads)
+        avg_v_grads = mpi.sync_gradients(v_grads)
+        apply_gradients(avg_pi_grads, avg_v_grads)
         return pi_loss, v_loss
 
     print("Setting up model saver")

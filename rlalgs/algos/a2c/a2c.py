@@ -4,19 +4,17 @@ Synchronous Advantage Actor-Critic (A2C) implementation
 import gym
 import time
 import numpy as np
+
 import tensorflow as tf
+import tensorflow.keras.layers as layers
+import tensorflow.keras.optimizers as optimizers
+
 import rlalgs.utils.mpi as mpi
 import rlalgs.utils.logger as log
 import rlalgs.utils.utils as utils
-import tensorflow.keras.backend as K
 import rlalgs.algos.a2c.core as core
-import tensorflow.keras.layers as layers
 import rlalgs.utils.preprocess as preprocess
 from rlalgs.algos.models import mlp_actor_critic
-
-# Just disables the warning, doesn't enable AVX/FMA
-import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 
 def a2c(env_fn, hidden_sizes=[64, 64], epochs=50, steps_per_epoch=4000, pi_lr=3e-4, vf_lr=1e-3,
@@ -62,55 +60,76 @@ def a2c(env_fn, hidden_sizes=[64, 64], epochs=50, steps_per_epoch=4000, pi_lr=3e
 
     if obs_dim is None:
         obs_dim = utils.get_dim_from_space(env.observation_space)
+    num_actions = utils.get_dim_from_space(env.action_space)
     act_dim = env.action_space.shape
-
-    mpi.print_msg("Building network")
-    obs_ph = layers.Input(shape=(obs_dim, ))
-    act_ph = utils.placeholder_from_space(env.action_space)
-    ret_ph = utils.get_placeholder(tf.float32, shape=(None, ))
-    adv_ph = utils.get_placeholder(tf.float32, shape=(None, ))
-
-    pi_model, pi_fn, pi_logp, v_model, v_fn = mlp_actor_critic(obs_ph, act_ph, env.action_space, hidden_sizes)
-
-    mpi.print_msg("Setup training ops - actor")
-    pi_loss = -tf.reduce_mean(pi_logp * adv_ph)
-    pi_train_op = mpi.MPIAdamOptimizer(learning_rate=pi_lr)
-    pi_updates = pi_train_op.get_updates(pi_loss, pi_model.trainable_weights)
-    pi_train_fn = K.function([obs_ph, act_ph, adv_ph], [pi_loss], updates=pi_updates)
-
-    mpi.print_msg("Setup training ops - critic")
-    v_loss = tf.reduce_mean((ret_ph - v_model.output)**2)
-    v_train_op = mpi.MPIAdamOptimizer(learning_rate=vf_lr)
-    v_updates = v_train_op.get_updates(v_loss, v_model.trainable_weights)
-    v_train_fn = K.function([v_model.input, ret_ph], [v_loss], updates=v_updates)
 
     mpi.print_msg("Initializing Replay Buffer")
     local_steps_per_epoch = int(steps_per_epoch / mpi.num_procs())
     buf = core.ReplayBuffer(obs_dim, act_dim, local_steps_per_epoch)
 
+    mpi.print_msg("Building network")
+    obs_ph = layers.Input(shape=(obs_dim, ))
+
+    pi_model, pi_fn, v_model, v_fn = mlp_actor_critic(
+        obs_ph, env.action_space, hidden_sizes)
+
+    mpi.print_msg("Setup training ops - actor")
+    pi_train_op = optimizers.Adam(learning_rate=pi_lr)
+
+    @tf.function
+    def policy_loss(a_pred, a_taken, a_adv):
+        action_mask = tf.one_hot(tf.cast(a_taken, tf.int32), num_actions)
+        log_probs = tf.reduce_sum(action_mask * tf.nn.log_softmax(a_pred), axis=1)
+        return -tf.reduce_mean(log_probs * a_adv)
+
+    mpi.print_msg("Setup training ops - critic")
+    v_train_op = optimizers.Adam(learning_rate=vf_lr)
+
+    @tf.function
+    def value_loss(o_val, o_ret):
+        return tf.reduce_mean((o_ret - o_val)**2)
+
     # 9. Sync all params across processes
     mpi.print_msg("Syncing all params")
-    mpi.sync_params([pi_model.trainable_weights, v_model.trainable_weights])
 
-    # if mpi.proc_id() == 0:
-    #     # only save model of one cpu
-    #     logger.setup_tf_model_saver(sess, env, {log.OBS_NAME: obs_ph}, {log.ACTS_NAME: pi})
+    def sync():
+        new_pi_weights = mpi.sync_params(pi_model.get_weights())
+        pi_model.set_weights(new_pi_weights)
+        new_v_weights = mpi.sync_params(v_model.get_weights())
+        v_model.set_weights(new_v_weights)
 
-    def get_action(o):
-        action = pi_fn([o])[0]
-        return np.squeeze(action, axis=-1)
+    sync()
 
-    def get_value(o):
-        val = v_fn([o])[0]
-        return np.squeeze(val, axis=-1)
+    if mpi.proc_id() == 0:
+        # only save model of one cpu
+        # logger.setup_tf_model_saver(pi_model, env, "pg", v_model)
+        pass
+
+    @tf.function
+    def get_grads(batch_obs, batch_acts, batch_rets, batch_adv):
+        with tf.GradientTape(persistent=True) as tape:
+            a_pred = pi_model(batch_obs)
+            o_val = v_model(batch_obs)
+            pi_loss = policy_loss(a_pred, batch_acts, batch_adv)
+            v_loss = value_loss(o_val, batch_rets)
+        pi_grads = tape.gradient(pi_loss, pi_model.trainable_variables)
+        v_grads = tape.gradient(v_loss, v_model.trainable_variables)
+        return pi_loss, pi_grads, v_loss, v_grads
+
+    @tf.function
+    def apply_gradients(pi_grads, v_grads):
+        pi_train_op.apply_gradients(zip(pi_grads, pi_model.trainable_variables))
+        v_train_op.apply_gradients(zip(v_grads, v_model.trainable_variables))
 
     def update():
         batch_obs, batch_acts, batch_rets, batch_adv = buf.get()
-        pi_l = pi_train_fn([batch_obs, batch_acts, batch_adv])[0]
-        for _ in range(train_v_iters):
-            v_l = v_train_fn([batch_obs, batch_rets])[0]
-        mpi.sync_params([pi_model.trainable_weights, v_model.trainable_weights])
-        return pi_l, v_l
+        pi_loss, pi_grads, v_loss, v_grads = get_grads(
+            batch_obs, batch_acts, batch_rets, batch_rets)
+        avg_pi_grads = mpi.sync_gradients(pi_grads)
+        avg_v_grads = mpi.sync_gradients(v_grads)
+        apply_gradients(avg_pi_grads, avg_v_grads)
+        sync()
+        return pi_loss, v_loss
 
     # 9. The training loop
     def train_one_epoch():
@@ -121,8 +140,8 @@ def a2c(env_fn, hidden_sizes=[64, 64], epochs=50, steps_per_epoch=4000, pi_lr=3e
         for t in range(local_steps_per_epoch):
 
             o = preprocess_fn(o, env)
-            a = get_action(o.reshape(1, -1))
-            v_t = get_value(o.reshape(1, -1))
+            a = pi_fn(o)
+            v_t = v_fn(o)
             o, r, d, _ = env.step(a)
 
             ep_ret += r
@@ -130,7 +149,7 @@ def a2c(env_fn, hidden_sizes=[64, 64], epochs=50, steps_per_epoch=4000, pi_lr=3e
 
             if d or t == local_steps_per_epoch-1:
                 if not d:
-                    r = get_value(o.reshape(1, -1))
+                    r = v_fn(o)
                 buf.store(o, a, r, v_t)
                 buf.finish_path()
                 if d:
@@ -138,7 +157,7 @@ def a2c(env_fn, hidden_sizes=[64, 64], epochs=50, steps_per_epoch=4000, pi_lr=3e
                     batch_ep_rets.append(ep_ret)
                     batch_ep_lens.append(ep_len)
                 ep_ret, ep_len = 0, 0
-                o, r, d = env.reset(), env, 0, False
+                o, r, d = env.reset(), 0, False
             else:
                 buf.store(o, a, r, v_t)
 

@@ -61,15 +61,23 @@ def sync_params(params, root=0):
     # 3. Broadcast
     synced_params = tf_broadcast(concat_vars, root)
     # 4. Get flattened sizes of OG variables
-    flat_sizes = [int(np.prod(p.shape.as_list())) for p in params]
+    flat_sizes = [int(np.prod(p.shape)) for p in params]
     # 5. Split Synced concatted 1D vector into OG flattened shapes
     splits = tf.split(synced_params, flat_sizes)
     # 6. Reshape synced flattened vectors into OG shapes
     new_params = [tf.reshape(p_new, p.shape) for p, p_new in zip(params, splits)]
     # 7. Assign synced variables to OG variables
-    assigned = [tf.assign(p, p_new) for p, p_new in zip(params, new_params)]
+    # assigned = [tf.assign(p, p_new) for p, p_new in zip(params, new_params)]
     # 8. Group assign ops into one operation and return
-    return tf.group(assigned)
+    for p_new, p in zip(new_params, params):
+        print("p   :", p.shape)
+        print("p_new:", p_new.shape)
+        print(p_new == p)
+        print(p[:10])
+        print(p_new[:10])
+        input()
+    # return tf.group(assigned)
+    return new_params
 
 
 def flat_concat(params):
@@ -81,16 +89,51 @@ def flat_concat(params):
 
 def tf_broadcast(x, root=0):
     """ Creates function for syncing x from root process to all other processes """
-    @tf.function
-    def _broadcast(x):
-        broadcast(x)
-        return x
-    return _broadcast(x)
+    # def _broadcast(x):
+    #     broadcast(x)
+    #     return x
+    broadcast(x)
+    return x
 
 
 def broadcast(x, root=0):
-    """ Sends x from root process to all other processes """
+    """Sends x from root process to all other processes """
     MPI.COMM_WORLD.Bcast(x, root=root)
+
+
+def sync_gradients(grads):
+    """Sync and average gradients across processes """
+    num_tasks = num_procs()
+    # Convert grads into a single flat tensor
+    flat_grads = flat_concat([g for g in grads])
+    # buffer to store accumulated 1D grad tensor
+    buf = np.zeros(flat_grads.shape, np.float32)
+
+    def _collect_gradients(flat_gradients):
+        # Sum grads across all processes
+        MPI.COMM_WORLD.Allreduce(flat_gradients, buf, op=MPI.SUM)
+        # Average by dividing by number of processes
+        np.divide(buf, float(num_tasks), out=buf)
+        return buf
+
+    # Collect gradients
+    avg_flat_grads = _collect_gradients(flat_grads)
+
+    # Reconstruct original grad tensors from accumulated 1D synced tensor
+    # get sizes of OG grad tensors for reconstruction latter
+    shapes = [u.shape.as_list() for u in grads]
+    sizes = []
+    idx = 0
+    for s in shapes:
+        idx += int(np.prod(s))
+        sizes.append(idx)
+    # ensure correct flat shape
+    avg_flat_grads.reshape(flat_grads.shape)
+    # split into OG flat tensor shapes
+    avg_grads_1D = np.split(avg_flat_grads, sizes, axis=0)
+    # reshape into OG 2D tensor shapes
+    avg_grads_correct = [np.reshape(a, g.shape) for a, g in zip(avg_grads_1D, grads)]
+    return avg_grads_correct
 
 
 class MPIAdamOptimizer(tf.keras.optimizers.Adam):
