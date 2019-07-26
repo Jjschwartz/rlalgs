@@ -12,6 +12,14 @@ import rlalgs.utils.utils as utils
 import rlalgs.algos.policy as policy_fn
 
 
+def print_model_summary(models):
+    print("\nModel summaries")
+    for name, model in models.items():
+        print(f"\nModel: {name}")
+        model.summary()
+    print()
+
+
 def q_network(x, action_space, hidden_sizes=[64], activation=tf.nn.relu,
               output_activation=None):
     """

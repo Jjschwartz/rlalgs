@@ -11,12 +11,11 @@ import tensorflow as tf
 import tensorflow.keras.layers as layers
 import tensorflow.keras.optimizers as optimizers
 
-import rlalgs.utils.mpi as mpi
 import rlalgs.utils.logger as log
 import rlalgs.utils.utils as utils
 import rlalgs.utils.preprocess as preprocess
-from rlalgs.algos.models import mlp_actor_critic
-from rlalgs.algos.vpg.core import VPGReplayBuffer
+from rlalgs.algos.buffers import PGReplayBuffer
+from rlalgs.algos.models import mlp_actor_critic, print_model_summary
 
 
 def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs=50,
@@ -63,19 +62,14 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
     act_dim = env.action_space.shape
 
     print("Initializing Replay Buffer")
-    buf = VPGReplayBuffer(obs_dim, act_dim, batch_size, gamma=gamma, adv_fn="gae")
+    buf = PGReplayBuffer(obs_dim, act_dim, batch_size, gamma=gamma, adv_fn="gae")
 
     print("Building network")
     obs_ph = layers.Input(shape=(obs_dim,))
-
     pi_model, pi_fn, v_model, v_fn = mlp_actor_critic(
         obs_ph, env.action_space, hidden_sizes, share_layers=True)
 
-    print("Model summaries")
-    print("Actor model")
-    print(pi_model.summary())
-    print("\nCritic model")
-    print(v_model.summary())
+    print_model_summary({"Actor": pi_model, "Critic": v_model})
 
     print("Setup training ops - actor")
     pi_train_op = optimizers.Adam(learning_rate=pi_lr)
@@ -113,9 +107,7 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
     def update(batch_obs, batch_acts, batch_rets, batch_adv):
         pi_loss, pi_grads, v_loss, v_grads = get_grads(
             batch_obs, batch_acts, batch_rets, batch_rets)
-        avg_pi_grads = mpi.sync_gradients(pi_grads)
-        avg_v_grads = mpi.sync_gradients(v_grads)
-        apply_gradients(avg_pi_grads, avg_v_grads)
+        apply_gradients(pi_grads, v_grads)
         return pi_loss, v_loss
 
     print("Setting up model saver")
@@ -124,8 +116,8 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
     def train_one_epoch():
         o, r, d = env.reset(), 0, False
         finished_rendering_this_epoch = False
-        ep_len, ep_ret = 0, 0
         batch_ep_lens, batch_ep_rets = [], []
+        ep_len, ep_ret = 0, 0
         t = 0
 
         while True:
@@ -147,6 +139,9 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
                 # since we may end epoch not at terminal state
                 if d:
                     last_val = r
+                    # only save completed episodes for reporting
+                    batch_ep_lens.append(ep_len)
+                    batch_ep_rets.append(ep_ret)
                 else:
                     o = preprocess_fn(o, env)
                     last_val = v_fn(o)
@@ -154,8 +149,6 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
 
                 o, r, d = env.reset(), 0, False
                 finished_rendering_this_epoch = True
-                batch_ep_lens.append(ep_len)
-                batch_ep_rets.append(ep_ret)
                 ep_len, ep_ret = 0, 0
                 if t == batch_size:
                     break

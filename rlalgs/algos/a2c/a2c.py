@@ -12,13 +12,13 @@ import tensorflow.keras.optimizers as optimizers
 import rlalgs.utils.mpi as mpi
 import rlalgs.utils.logger as log
 import rlalgs.utils.utils as utils
-import rlalgs.algos.a2c.core as core
 import rlalgs.utils.preprocess as preprocess
-from rlalgs.algos.models import mlp_actor_critic
+from rlalgs.algos.buffers import PGReplayBuffer
+from rlalgs.algos.models import mlp_actor_critic, print_model_summary
 
 
-def a2c(env_fn, hidden_sizes=[64, 64], epochs=50, steps_per_epoch=4000, pi_lr=3e-4, vf_lr=1e-3,
-        train_v_iters=80, gamma=0.99, seed=0, logger_kwargs=dict(), save_freq=10,
+def a2c(env_fn, hidden_sizes=[64, 64], epochs=50, steps_per_epoch=5000, pi_lr=1e-2, vf_lr=1e-2,
+        gamma=0.99, seed=0, logger_kwargs=dict(), save_freq=10,
         overwrite_save=True, preprocess_fn=None, obs_dim=None):
     """
     Train agent on env using A2C
@@ -31,7 +31,6 @@ def a2c(env_fn, hidden_sizes=[64, 64], epochs=50, steps_per_epoch=4000, pi_lr=3e
     steps_per_epoch : number of steps per epoch
     pi_lr : learning rate for policy network update
     vf_lr : learning rate for value network update
-    train_v_iters : number of value network updates per policy network update
     gamma : discount parameter
     seed : random seed
     logger_kwargs : dictionary of keyword arguments for logger
@@ -65,13 +64,15 @@ def a2c(env_fn, hidden_sizes=[64, 64], epochs=50, steps_per_epoch=4000, pi_lr=3e
 
     mpi.print_msg("Initializing Replay Buffer")
     local_steps_per_epoch = int(steps_per_epoch / mpi.num_procs())
-    buf = core.ReplayBuffer(obs_dim, act_dim, local_steps_per_epoch)
+    buf = PGReplayBuffer(obs_dim, act_dim, local_steps_per_epoch, gamma=gamma)
 
     mpi.print_msg("Building network")
     obs_ph = layers.Input(shape=(obs_dim, ))
-
     pi_model, pi_fn, v_model, v_fn = mlp_actor_critic(
-        obs_ph, env.action_space, hidden_sizes)
+        obs_ph, env.action_space, hidden_sizes, share_layers=True)
+
+    if mpi.proc_id() == 0:
+        print_model_summary({"Actor": pi_model, "Critic": v_model})
 
     mpi.print_msg("Setup training ops - actor")
     pi_train_op = optimizers.Adam(learning_rate=pi_lr)
@@ -102,8 +103,7 @@ def a2c(env_fn, hidden_sizes=[64, 64], epochs=50, steps_per_epoch=4000, pi_lr=3e
 
     if mpi.proc_id() == 0:
         # only save model of one cpu
-        # logger.setup_tf_model_saver(pi_model, env, "pg", v_model)
-        pass
+        logger.setup_tf_model_saver(pi_model, env, "pg", v_model)
 
     @tf.function
     def get_grads(batch_obs, batch_acts, batch_rets, batch_adv):
@@ -122,12 +122,13 @@ def a2c(env_fn, hidden_sizes=[64, 64], epochs=50, steps_per_epoch=4000, pi_lr=3e
         v_train_op.apply_gradients(zip(v_grads, v_model.trainable_variables))
 
     def update():
-        batch_obs, batch_acts, batch_rets, batch_adv = buf.get()
+        batch_obs, batch_acts, batch_rets, batch_adv, batch_vals = buf.get()
         pi_loss, pi_grads, v_loss, v_grads = get_grads(
-            batch_obs, batch_acts, batch_rets, batch_rets)
+            batch_obs, batch_acts, batch_rets, batch_adv)
         avg_pi_grads = mpi.sync_gradients(pi_grads)
         avg_v_grads = mpi.sync_gradients(v_grads)
         apply_gradients(avg_pi_grads, avg_v_grads)
+        apply_gradients(pi_grads, v_grads)
         sync()
         return pi_loss, v_loss
 
@@ -138,31 +139,30 @@ def a2c(env_fn, hidden_sizes=[64, 64], epochs=50, steps_per_epoch=4000, pi_lr=3e
         ep_ret, ep_len = 0, 0
 
         for t in range(local_steps_per_epoch):
-
             o = preprocess_fn(o, env)
             a = pi_fn(o)
             v_t = v_fn(o)
+            buf.store(o, a, r, v_t)
             o, r, d, _ = env.step(a)
 
-            ep_ret += r
             ep_len += 1
+            ep_ret += r
 
             if d or t == local_steps_per_epoch-1:
-                if not d:
-                    r = v_fn(o)
-                buf.store(o, a, r, v_t)
-                buf.finish_path()
                 if d:
-                    # only save if episode done
+                    last_val = r
                     batch_ep_rets.append(ep_ret)
                     batch_ep_lens.append(ep_len)
-                ep_ret, ep_len = 0, 0
-                o, r, d = env.reset(), 0, False
-            else:
-                buf.store(o, a, r, v_t)
+                else:
+                    o = preprocess_fn(o, env)
+                    last_val = v_fn(o)
+                buf.finish_path(last_val)
 
-        epoch_pi_loss, epoch_v_loss = update()
-        return epoch_pi_loss, epoch_v_loss, batch_ep_rets, batch_ep_lens
+                o, r, d = env.reset(), 0, False
+                ep_ret, ep_len = 0, 0
+
+        pi_loss, v_loss = update()
+        return pi_loss.numpy(), v_loss.numpy(), batch_ep_rets, batch_ep_lens
 
     total_time = 0
     for epoch in range(epochs):
@@ -184,9 +184,9 @@ def a2c(env_fn, hidden_sizes=[64, 64], epochs=50, steps_per_epoch=4000, pi_lr=3e
             logger.log_tabular("time_rem", training_time_left)
             logger.dump_tabular()
 
-            # if (save_freq != 0 and epoch % save_freq == 0) or epoch == epochs-1:
-            #     itr = None if overwrite_save else epoch
-            #     logger.save_model(itr)
+            if (save_freq != 0 and epoch % save_freq == 0) or epoch == epochs-1:
+                itr = None if overwrite_save else epoch
+                logger.save_model(itr)
 
 
 if __name__ == "__main__":
@@ -199,7 +199,6 @@ if __name__ == "__main__":
     parser.add_argument("--steps", type=int, default=4000)
     parser.add_argument("--pi_lr", type=float, default=1e-3)
     parser.add_argument("--vf_lr", type=float, default=1e-3)
-    parser.add_argument("--train_v_iters", type=int, default=80)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--render", action="store_true")
@@ -223,5 +222,5 @@ if __name__ == "__main__":
 
     a2c(lambda: gym.make(args.env), hidden_sizes=args.hidden_sizes, epochs=args.epochs,
         steps_per_epoch=args.steps, pi_lr=args.pi_lr, vf_lr=args.vf_lr, seed=args.seed,
-        train_v_iters=args.train_v_iters, gamma=args.gamma, logger_kwargs=logger_kwargs,
+        gamma=args.gamma, logger_kwargs=logger_kwargs,
         preprocess_fn=preprocess_fn, obs_dim=obs_dim)
