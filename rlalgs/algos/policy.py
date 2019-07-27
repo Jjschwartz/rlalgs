@@ -51,12 +51,13 @@ def discrete_qlearning(model):
 
 def continuous_pg(model, log_std=-0.5):
     """Policy method for continuous actions using policy gradient. """
-    log_std = log_std*np.ones(tf.shape(model.output))
+    # dtype=float32 crucial to be compatible with rf.random.normal
+    log_std = log_std*np.ones(model.output.shape[1], dtype=np.float32)
     std = tf.exp(log_std)
 
     @tf.function
     def model_query(o):
-        return model(o) + tf.random.normal(tf.shape(model.output)) * std
+        return model(o) + tf.random.normal((model.output.shape[1], )) * std
 
     def act_fn(o):
         a_tensor = model_query(o.reshape(1, -1))

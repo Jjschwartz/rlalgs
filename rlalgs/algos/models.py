@@ -1,5 +1,18 @@
 """
 This module contains functions for creating neural network models
+
+Model function interfaces:
+- On-Policy - Policy Gradient
+    - Returns:
+        1. pi_model : the actor model
+        2. pi_fn : the policy function (o -> a)
+        3. v_model : the critic model
+        4. v_fn : the value function (o -> real number value)
+- Off-policy - Q Learning
+    - Returns:
+        1. q_network : the Q-value network
+        2. pi_fn : the policy function (o -> a)
+        3. q_fn : q-value fn (a, o -> max_q_val(o), q_val(a, o))
 """
 import numpy as np
 from gym.spaces import Box, Discrete
@@ -13,6 +26,7 @@ import rlalgs.algos.policy as policy_fn
 
 
 def print_model_summary(models):
+    """Print network architecture summary for each model in models. """
     print("\nModel summaries")
     for name, model in models.items():
         print(f"\nModel: {name}")
@@ -169,14 +183,6 @@ def mlp_gaussian_policy(model):
     Returns:
         action_fn : action selection function
     """
-    # log probs for calculating loss
-    # log_std = tf.Variable(-0.5*np.ones(act_dim, dtype=np.float32), trainable=False)
-    # log_probs = gaussian_likelihood(a, model.output, log_std)
-    # action selection function
-    # std = tf.exp(log_std)
-    # act_predict = model.output + tf.random.normal(tf.shape(model.output)) * std
-    # action_fn = K.function(inputs=[x], outputs=[act_predict])
-    # return action_fn, log_probs
     return policy_fn.continuous_pg(model)
 
 
