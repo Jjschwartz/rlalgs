@@ -187,8 +187,7 @@ def mlp_gaussian_policy(model):
 
 
 def mlp(model_input, first_layer, output_size, hidden_sizes=[64], activation=tf.tanh, output_activation=None):
-    """
-    Creates a fully connected neural network
+    """Creates a fully connected neural network
 
     Arguments:
         model_input : Keras.Input to network
@@ -211,18 +210,29 @@ def mlp(model_input, first_layer, output_size, hidden_sizes=[64], activation=tf.
     return Model(inputs=model_input, outputs=acts_ph), last_hidden_layer
 
 
-def gaussian_likelihood(x, mu, log_std):
-    """
-    Calculate the gaussian log-Likelihood for actions
+def cnn(model_input, first_layer, output_size, hidden_sizes=[4, 8, 16], activation=tf.tanh,
+        output_activation=None, kernal_size=(3, 3), pool_size=(2, 2)):
+    """Creates a convolutional neural network
 
     Arguments:
-        a : action sample tensor
-        mu : mean tensor
-        log_std : log std tensor
+        model_input : Keras.Input to network
+        first_layer : first input into network, this can be Keras.Input or a Keras.layer
+            (will be same as model_input if not using layer from another network)
+        output_size : number of neurons in output layer
+        hidden_sizes : ordered list of size of each hidden layer
+        activation : tf or K activation function for hidden layers
+        output_activation : tf or K activation function for output layer or None for linear activation
 
     Returns:
-        log likelihood tensor
+        model : tf.keras model
+        last_hidden_layer : tf.Layer final hidden layer
     """
-    std = tf.exp(log_std)
-    pre_sum = tf.square((x - mu)/std) + 2*log_std + np.log(2*np.pi)
-    return -0.5 * tf.reduce_sum(pre_sum, axis=1)
+    model = Sequential()
+    model.add(Conv2D(4, kernel_size=(3,3), padding='same', activation='relu', input_shape = (80,80,1)))
+    model.add(MaxPool2D(pool_size=(2, 2)))
+    model.add(Conv2D(8, kernel_size=(3,3), padding='same', activation='relu'))
+    model.add(MaxPool2D(pool_size=(2, 2)))
+    model.add(Conv2D(16, kernel_size=(3,3), padding='same', activation='relu'))
+    model.add(MaxPool2D(pool_size=(2, 2)))
+    model.add(Flatten())
+    model.add(Dense(2, activation='softmax'))

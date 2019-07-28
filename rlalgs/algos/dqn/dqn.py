@@ -17,7 +17,7 @@ from rlalgs.algos.models import q_network
 import rlalgs.utils.preprocess as preprocess
 
 
-def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, batch_size=32,
+def dqn(env_fn, model_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, batch_size=32,
         seed=0, replay_size=100000, epsilon=0.05, gamma=0.99, polyak=0.995, start_steps=100000,
         target_update_freq=1, render=False, render_last=False, logger_kwargs=dict(), save_freq=10,
         overwrite_save=True, preprocess_fn=None, obs_dim=None):
@@ -27,6 +27,7 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
     Arguments:
     ----------
     env_fn : A function which creates a copy of OpenAI Gym environment
+    model_fn : function for creating the Q-network model to use (see models module for more info)
     hidden_sizes : list of units in each hidden layer of policy network
     lr : learning rate for policy network update
     epochs : number of epochs to train for
@@ -72,7 +73,6 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
 
     if obs_dim is None:
         obs_dim = utils.get_dim_from_space(env.observation_space)
-    # need .shape for replay buffer and #actions for random action sampling
     num_actions = utils.get_dim_from_space(env.action_space)
     act_dim = env.action_space.shape
 
@@ -86,14 +86,10 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
     print("Building network")
     obs_ph = layers.Input(shape=(obs_dim, ))
     obs_prime_ph = layers.Input(shape=(obs_dim, ))
-    act_ph = utils.placeholder_from_space(env.action_space)
-    rew_ph = utils.get_placeholder(tf.float32, shape=(None, ))
-    done_ph = utils.get_placeholder(tf.float32, shape=(None, ))
-
     # main network
-    q_model, pi_fn, q_fn = q_network(obs_ph, env.action_space, hidden_sizes)
+    q_model, pi_fn, q_fn = model_fn(obs_ph, env.action_space, hidden_sizes)
     # target network
-    q_model_targ, pi_fn_targ, q_fn_targ = q_network(obs_prime_ph, env.action_space, hidden_sizes)
+    q_model_targ, pi_fn_targ, q_fn_targ = model_fn(obs_prime_ph, env.action_space, hidden_sizes)
 
     print("Setting up training ops")
     q_optimizer = optimizers.Adam(learning_rate=lr)
@@ -189,7 +185,6 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
                 ep_len, ep_ret, ep_loss = 0, 0, []
 
             if t >= epoch_steps:
-                epoch_ep_lens.append(ep_len)
                 break
 
         return epoch_ep_loss, epoch_ep_rets, epoch_ep_lens
@@ -210,7 +205,6 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
         logger.log_tabular("avg_return", np.mean(results[1]))
         logger.log_tabular("avg_ep_lens", np.mean(results[2]))
         logger.log_tabular("total_eps", total_episodes)
-        logger.log_tabular("total_steps", np.sum(results[2]))
         logger.log_tabular("end_epsilon", epsilon if total_t >= start_steps else epsilon_schedule[total_t])
         logger.log_tabular("epoch_time", epoch_time)
         logger.log_tabular("mem_usage", utils.get_current_mem_usage())
@@ -265,7 +259,7 @@ if __name__ == "__main__":
     preprocess_fn, obs_dim = preprocess.get_preprocess_fn(args.env)
 
     print("\nDeep Q-Network")
-    dqn(lambda: gym.make(args.env), hidden_sizes=args.hidden_sizes, lr=args.lr,
+    dqn(lambda: gym.make(args.env), q_network, hidden_sizes=args.hidden_sizes, lr=args.lr,
         epochs=args.epochs, epoch_steps=args.epoch_steps, batch_size=args.batch_size,
         seed=args.seed, replay_size=args.replay_size, epsilon=args.epsilon, gamma=args.gamma,
         polyak=args.polyak, start_steps=args.start_steps, target_update_freq=args.target_update_freq,

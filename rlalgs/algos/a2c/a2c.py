@@ -17,7 +17,7 @@ from rlalgs.algos.buffers import PGReplayBuffer
 from rlalgs.algos.models import mlp_actor_critic, print_model_summary
 
 
-def a2c(env_fn, hidden_sizes=[64, 64], epochs=50, steps_per_epoch=5000, pi_lr=1e-2, vf_lr=1e-2,
+def a2c(env_fn, model_fn, hidden_sizes=[64, 64], epochs=50, steps_per_epoch=5000, pi_lr=1e-2, vf_lr=1e-2,
         gamma=0.99, seed=0, logger_kwargs=dict(), save_freq=10,
         overwrite_save=True, preprocess_fn=None, obs_dim=None):
     """
@@ -26,6 +26,8 @@ def a2c(env_fn, hidden_sizes=[64, 64], epochs=50, steps_per_epoch=5000, pi_lr=1e
     Arguments
     ----------
     env_fn : A function which creates a copy of OpenAI Gym environment
+    model_fn : function for creating the policy gradient models to use
+        (see models module for more info)
     hidden_sizes : list of units in each hidden layer of policy network
     epochs : number of epochs to train for
     steps_per_epoch : number of steps per epoch
@@ -68,7 +70,7 @@ def a2c(env_fn, hidden_sizes=[64, 64], epochs=50, steps_per_epoch=5000, pi_lr=1e
 
     mpi.print_msg("Building network")
     obs_ph = layers.Input(shape=(obs_dim, ))
-    pi_model, pi_fn, v_model, v_fn = mlp_actor_critic(
+    pi_model, pi_fn, v_model, v_fn = model_fn(
         obs_ph, env.action_space, hidden_sizes, share_layers=True)
 
     if mpi.proc_id() == 0:
@@ -206,10 +208,7 @@ if __name__ == "__main__":
     parser.add_argument("--exp_name", type=str, default=None)
     args = parser.parse_args()
 
-    # 1. fork
     mpi.mpi_fork(args.cpu)
-
-    # 2. test fork
     mpi.print_msg("Running A2C!")
 
     exp_name = f"a2c_{args.cpu}_{args.env}" if args.exp_name is None else args.exp_name
@@ -220,7 +219,7 @@ if __name__ == "__main__":
 
     preprocess_fn, obs_dim = preprocess.get_preprocess_fn(args.env)
 
-    a2c(lambda: gym.make(args.env), hidden_sizes=args.hidden_sizes, epochs=args.epochs,
-        steps_per_epoch=args.steps, pi_lr=args.pi_lr, vf_lr=args.vf_lr, seed=args.seed,
-        gamma=args.gamma, logger_kwargs=logger_kwargs,
-        preprocess_fn=preprocess_fn, obs_dim=obs_dim)
+    a2c(lambda: gym.make(args.env), mlp_actor_critic, hidden_sizes=args.hidden_sizes,
+        epochs=args.epochs, steps_per_epoch=args.steps, pi_lr=args.pi_lr, vf_lr=args.vf_lr,
+        seed=args.seed, gamma=args.gamma, logger_kwargs=logger_kwargs, preprocess_fn=preprocess_fn,
+        obs_dim=obs_dim)

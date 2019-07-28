@@ -100,25 +100,6 @@ def discount_cumsum(x, discount):
     return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
 
 
-def mlp(x, output_size, hidden_sizes=[64], activation=tf.tanh, output_activation=None):
-    """
-    Creates a fully connected neural network
-
-    Arguments:
-        x : tf placeholder input to network
-        output_size : number of neurons in output layer
-        hidden_sizes : ordered list of size of each hidden layer
-        activation : tf activation function for hidden layers
-        output_activation : tf activation function for output layer or None if no activation
-
-    Returns:
-        y : output layer as tf tensor
-    """
-    for size in hidden_sizes:
-        x = tf.layers.dense(x, size, activation=activation)
-    return tf.layers.dense(x, output_size, activation=output_activation)
-
-
 def mlp_categorical_policy(x, a, action_space, hidden_sizes=[64], activation=tf.tanh,
                            output_activation=None):
     """
@@ -226,4 +207,5 @@ def training_time_left(current_epoch, total_epochs, epoch_time):
     """
     epochs_rem = total_epochs - current_epoch - 1
     time_rem = epochs_rem * epoch_time
-    return str(datetime.timedelta(seconds=time_rem))
+    # round to remove microseconds
+    return str(datetime.timedelta(seconds=round(time_rem)))

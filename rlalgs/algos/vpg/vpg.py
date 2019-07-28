@@ -18,7 +18,7 @@ from rlalgs.algos.buffers import PGReplayBuffer
 from rlalgs.algos.models import mlp_actor_critic, print_model_summary
 
 
-def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs=50,
+def vpg(env_fn, model_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs=50,
         batch_size=5000, seed=0, render=False, render_last=False, logger_kwargs=dict(),
         save_freq=10, overwrite_save=True, preprocess_fn=None, obs_dim=None):
     """
@@ -27,6 +27,8 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
     Arguments:
     ----------
     env_fn : A function which creates a copy of OpenAI Gym environment
+    model_fn : function for creating the policy gradient models to use
+        (see models module for more info)
     hidden_sizes : list of units in each hidden layer of policy network
     lr : learning rate for policy network update
     epochs : number of epochs to train for
@@ -66,7 +68,7 @@ def vpg(env_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs
 
     print("Building network")
     obs_ph = layers.Input(shape=(obs_dim,))
-    pi_model, pi_fn, v_model, v_fn = mlp_actor_critic(
+    pi_model, pi_fn, v_model, v_fn = model_fn(
         obs_ph, env.action_space, hidden_sizes, share_layers=True)
 
     print_model_summary({"Actor": pi_model, "Critic": v_model})
@@ -219,7 +221,7 @@ if __name__ == "__main__":
     logger_kwargs = log.setup_logger_kwargs(exp_name, seed=args.seed)
 
     print("\nVanilla Policy Gradient")
-    vpg(lambda: gym.make(args.env), epochs=args.epochs, batch_size=args.batch_size,
+    vpg(lambda: gym.make(args.env), mlp_actor_critic, epochs=args.epochs, batch_size=args.batch_size,
         hidden_sizes=[args.hid]*args.layers, pi_lr=args.pi_lr, v_lr=args.v_lr, gamma=args.gamma,
         seed=args.seed, render=args.render, render_last=args.renderlast,
         logger_kwargs=logger_kwargs)
