@@ -8,28 +8,26 @@ import time
 import numpy as np
 
 import tensorflow as tf
-import tensorflow.keras.layers as layers
 import tensorflow.keras.optimizers as optimizers
 
 import rlalgs.utils.logger as log
 import rlalgs.utils.utils as utils
 import rlalgs.utils.preprocess as preprocess
 from rlalgs.algos.buffers import PGReplayBuffer
-from rlalgs.algos.models import mlp_actor_critic, print_model_summary
+from rlalgs.algos.models import mlp_actor_critic, cnn_actor_critic, print_model_summary
 
 
-def vpg(env_fn, model_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs=50,
+def vpg(env_fn, model_fn, model_kwargs, pi_lr=1e-2, v_lr=1e-2, gamma=0.99, epochs=50,
         batch_size=5000, seed=0, render=False, render_last=False, logger_kwargs=dict(),
         save_freq=10, overwrite_save=True, preprocess_fn=None, obs_dim=None):
-    """
-    Vanilla Policy Gradient
+    """Vanilla Policy Gradient
 
     Arguments:
     ----------
     env_fn : A function which creates a copy of OpenAI Gym environment
     model_fn : function for creating the policy gradient models to use
         (see models module for more info)
-    hidden_sizes : list of units in each hidden layer of policy network
+    model_kwargs : any kwargs to pass into model function
     lr : learning rate for policy network update
     epochs : number of epochs to train for
     batch_size : max batch size for epoch
@@ -59,7 +57,7 @@ def vpg(env_fn, model_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.
     env = env_fn()
 
     if obs_dim is None:
-        obs_dim = utils.get_dim_from_space(env.observation_space)
+        obs_dim = env.observation_space.shape
     num_actions = utils.get_dim_from_space(env.action_space)
     act_dim = env.action_space.shape
 
@@ -67,9 +65,7 @@ def vpg(env_fn, model_fn, hidden_sizes=[64, 64], pi_lr=1e-2, v_lr=1e-2, gamma=0.
     buf = PGReplayBuffer(obs_dim, act_dim, batch_size, gamma=gamma, adv_fn="gae")
 
     print("Building network")
-    obs_ph = layers.Input(shape=(obs_dim,))
-    pi_model, pi_fn, v_model, v_fn = model_fn(
-        obs_ph, env.action_space, hidden_sizes, share_layers=True)
+    pi_model, pi_fn, v_model, v_fn = model_fn(env, **model_kwargs)
 
     print_model_summary({"Actor": pi_model, "Critic": v_model})
 
@@ -204,11 +200,11 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", type=str, default='CartPole-v0')
+    parser.add_argument("-m", "--model", type=str, default="mlp")
+    parser.add_argument("--hidden_sizes", type=int, nargs="*", default=[64, 64])
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch_size", type=int, default=5000)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--hid", type=int, default=64)
-    parser.add_argument("--layers", type=int, default=2)
     parser.add_argument("--pi_lr", type=float, default=0.01)
     parser.add_argument("--v_lr", type=float, default=0.01)
     parser.add_argument("--gamma", type=float, default=0.99)
@@ -220,8 +216,13 @@ if __name__ == "__main__":
     exp_name = "vpg_" + args.env if args.exp_name is None else args.exp_name
     logger_kwargs = log.setup_logger_kwargs(exp_name, seed=args.seed)
 
+    model_fn = mlp_actor_critic
+    if args.model == "cnn":
+        model_fn = cnn_actor_critic
+    model_kwargs = {"hidden_sizes": args.hidden_sizes, "share_layers": True}
+
     print("\nVanilla Policy Gradient")
-    vpg(lambda: gym.make(args.env), mlp_actor_critic, epochs=args.epochs, batch_size=args.batch_size,
-        hidden_sizes=[args.hid]*args.layers, pi_lr=args.pi_lr, v_lr=args.v_lr, gamma=args.gamma,
+    vpg(lambda: gym.make(args.env), model_fn, model_kwargs, epochs=args.epochs,
+        batch_size=args.batch_size, pi_lr=args.pi_lr, v_lr=args.v_lr, gamma=args.gamma,
         seed=args.seed, render=args.render, render_last=args.renderlast,
         logger_kwargs=logger_kwargs)

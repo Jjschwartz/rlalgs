@@ -29,7 +29,7 @@ def discrete_pg(model):
         return tf.squeeze(tf.random.categorical(logits, 1), axis=1)
 
     def act_fn(o):
-        a_tensor = model_query(o.reshape(1, -1))
+        a_tensor = model_query(o[np.newaxis, ...])
         return np.squeeze(a_tensor, axis=-1)
 
     return act_fn
@@ -43,7 +43,7 @@ def discrete_qlearning(model):
         return tf.squeeze(a)
 
     def act_fn(o):
-        a_tensor = model_query(o.reshape(1, -1))
+        a_tensor = model_query(o[np.newaxis, ...])
         return np.squeeze(a_tensor, axis=-1)
 
     return act_fn
@@ -60,7 +60,7 @@ def continuous_pg(model, log_std=-0.5):
         return model(o) + tf.random.normal((model.output.shape[1], )) * std
 
     def act_fn(o):
-        a_tensor = model_query(o.reshape(1, -1))
+        a_tensor = model_query(o[np.newaxis, ...])
         return a_tensor.numpy()
 
     return act_fn

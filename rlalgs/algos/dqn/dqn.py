@@ -7,28 +7,26 @@ import numpy as np
 from gym.spaces import Discrete
 
 import tensorflow as tf
-import tensorflow.keras.layers as layers
 import tensorflow.keras.optimizers as optimizers
 
 import rlalgs.utils.logger as log
 import rlalgs.utils.utils as utils
 import rlalgs.algos.dqn.core as core
-from rlalgs.algos.models import q_network
 import rlalgs.utils.preprocess as preprocess
+from rlalgs.algos.models import mlp_q_network, cnn_q_network
 
 
-def dqn(env_fn, model_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, batch_size=32,
+def dqn(env_fn, model_fn, model_kwargs, lr=1e-3, epochs=50, epoch_steps=10000, batch_size=32,
         seed=0, replay_size=100000, epsilon=0.05, gamma=0.99, polyak=0.995, start_steps=100000,
         target_update_freq=1, render=False, render_last=False, logger_kwargs=dict(), save_freq=10,
         overwrite_save=True, preprocess_fn=None, obs_dim=None):
-    """
-    Deep Q-network with experience replay
+    """Deep Q-network with experience replay
 
     Arguments:
     ----------
     env_fn : A function which creates a copy of OpenAI Gym environment
     model_fn : function for creating the Q-network model to use (see models module for more info)
-    hidden_sizes : list of units in each hidden layer of policy network
+    model_kwargs : any kwargs to pass into model function
     lr : learning rate for policy network update
     epochs : number of epochs to train for
     epoch_steps : number of steps per epoch
@@ -72,7 +70,7 @@ def dqn(env_fn, model_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps
         raise NotImplementedError("DQN only works for environments with Discrete action spaces")
 
     if obs_dim is None:
-        obs_dim = utils.get_dim_from_space(env.observation_space)
+        obs_dim = env.observation_space.shape
     num_actions = utils.get_dim_from_space(env.action_space)
     act_dim = env.action_space.shape
 
@@ -84,12 +82,10 @@ def dqn(env_fn, model_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps
     total_t = 0
 
     print("Building network")
-    obs_ph = layers.Input(shape=(obs_dim, ))
-    obs_prime_ph = layers.Input(shape=(obs_dim, ))
     # main network
-    q_model, pi_fn, q_fn = model_fn(obs_ph, env.action_space, hidden_sizes)
+    q_model, pi_fn, q_fn = model_fn(env, **model_kwargs)
     # target network
-    q_model_targ, pi_fn_targ, q_fn_targ = model_fn(obs_prime_ph, env.action_space, hidden_sizes)
+    q_model_targ, pi_fn_targ, q_fn_targ = model_fn(env, **model_kwargs)
 
     print("Setting up training ops")
     q_optimizer = optimizers.Adam(learning_rate=lr)
@@ -236,6 +232,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", type=str, default='CartPole-v0')
+    parser.add_argument("-m", "--model", type=str, default="mlp")
     parser.add_argument("--hidden_sizes", type=int, nargs="*", default=[64, 64])
     parser.add_argument("--lr", type=float, default=1e-2)
     parser.add_argument("--epochs", type=int, default=50)
@@ -258,10 +255,15 @@ if __name__ == "__main__":
 
     preprocess_fn, obs_dim = preprocess.get_preprocess_fn(args.env)
 
+    model_fn = mlp_q_network
+    if args.model == "cnn":
+        model_fn = cnn_q_network
+    model_kwargs = {"hidden_sizes": args.hidden_sizes}
+
     print("\nDeep Q-Network")
-    dqn(lambda: gym.make(args.env), q_network, hidden_sizes=args.hidden_sizes, lr=args.lr,
-        epochs=args.epochs, epoch_steps=args.epoch_steps, batch_size=args.batch_size,
-        seed=args.seed, replay_size=args.replay_size, epsilon=args.epsilon, gamma=args.gamma,
-        polyak=args.polyak, start_steps=args.start_steps, target_update_freq=args.target_update_freq,
+    dqn(lambda: gym.make(args.env), model_fn, model_kwargs, lr=args.lr, epochs=args.epochs,
+        epoch_steps=args.epoch_steps, batch_size=args.batch_size, seed=args.seed,
+        replay_size=args.replay_size, epsilon=args.epsilon, gamma=args.gamma, polyak=args.polyak,
+        start_steps=args.start_steps, target_update_freq=args.target_update_freq,
         render=args.render, render_last=args.renderlast, logger_kwargs=logger_kwargs,
         preprocess_fn=preprocess_fn, obs_dim=obs_dim)

@@ -6,7 +6,6 @@ import time
 import numpy as np
 
 import tensorflow as tf
-import tensorflow.keras.layers as layers
 import tensorflow.keras.optimizers as optimizers
 
 import rlalgs.utils.mpi as mpi
@@ -14,10 +13,10 @@ import rlalgs.utils.logger as log
 import rlalgs.utils.utils as utils
 import rlalgs.utils.preprocess as preprocess
 from rlalgs.algos.buffers import PGReplayBuffer
-from rlalgs.algos.models import mlp_actor_critic, print_model_summary
+from rlalgs.algos.models import mlp_actor_critic, cnn_actor_critic, print_model_summary
 
 
-def a2c(env_fn, model_fn, hidden_sizes=[64, 64], epochs=50, steps_per_epoch=5000, pi_lr=1e-2, vf_lr=1e-2,
+def a2c(env_fn, model_fn, model_kwargs, epochs=50, steps_per_epoch=5000, pi_lr=1e-2, vf_lr=1e-2,
         gamma=0.99, seed=0, logger_kwargs=dict(), save_freq=10,
         overwrite_save=True, preprocess_fn=None, obs_dim=None):
     """
@@ -28,6 +27,7 @@ def a2c(env_fn, model_fn, hidden_sizes=[64, 64], epochs=50, steps_per_epoch=5000
     env_fn : A function which creates a copy of OpenAI Gym environment
     model_fn : function for creating the policy gradient models to use
         (see models module for more info)
+    model_kwargs : any kwargs to pass into model function
     hidden_sizes : list of units in each hidden layer of policy network
     epochs : number of epochs to train for
     steps_per_epoch : number of steps per epoch
@@ -60,7 +60,7 @@ def a2c(env_fn, model_fn, hidden_sizes=[64, 64], epochs=50, steps_per_epoch=5000
     env = env_fn()
 
     if obs_dim is None:
-        obs_dim = utils.get_dim_from_space(env.observation_space)
+        obs_dim = env.observation_space.shape
     num_actions = utils.get_dim_from_space(env.action_space)
     act_dim = env.action_space.shape
 
@@ -69,9 +69,7 @@ def a2c(env_fn, model_fn, hidden_sizes=[64, 64], epochs=50, steps_per_epoch=5000
     buf = PGReplayBuffer(obs_dim, act_dim, local_steps_per_epoch, gamma=gamma)
 
     mpi.print_msg("Building network")
-    obs_ph = layers.Input(shape=(obs_dim, ))
-    pi_model, pi_fn, v_model, v_fn = model_fn(
-        obs_ph, env.action_space, hidden_sizes, share_layers=True)
+    pi_model, pi_fn, v_model, v_fn = model_fn(env, **model_kwargs)
 
     if mpi.proc_id() == 0:
         print_model_summary({"Actor": pi_model, "Critic": v_model})
@@ -196,6 +194,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", type=str, default='CartPole-v0')
     parser.add_argument("--cpu", type=int, default=4)
+    parser.add_argument("-m", "--model", type=str, default="mlp")
     parser.add_argument("--hidden_sizes", type=int, nargs="*", default=[64, 64])
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--steps", type=int, default=4000)
@@ -217,9 +216,11 @@ if __name__ == "__main__":
     else:
         logger_kwargs = dict()
 
-    preprocess_fn, obs_dim = preprocess.get_preprocess_fn(args.env)
+    model_fn = mlp_actor_critic
+    if args.model == "cnn":
+        model_fn = cnn_actor_critic
+    model_kwargs = {"hidden_sizes": args.hidden_sizes, "share_layers": True}
 
-    a2c(lambda: gym.make(args.env), mlp_actor_critic, hidden_sizes=args.hidden_sizes,
-        epochs=args.epochs, steps_per_epoch=args.steps, pi_lr=args.pi_lr, vf_lr=args.vf_lr,
-        seed=args.seed, gamma=args.gamma, logger_kwargs=logger_kwargs, preprocess_fn=preprocess_fn,
-        obs_dim=obs_dim)
+    a2c(lambda: gym.make(args.env), model_fn, model_kwargs, epochs=args.epochs,
+        steps_per_epoch=args.steps, pi_lr=args.pi_lr, vf_lr=args.vf_lr, seed=args.seed,
+        gamma=args.gamma, logger_kwargs=logger_kwargs)

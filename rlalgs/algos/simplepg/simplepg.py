@@ -15,17 +15,16 @@ import time
 import numpy as np
 
 import tensorflow as tf
-import tensorflow.keras.layers as layers
 import tensorflow.keras.optimizers as optimizers
 
 import rlalgs.utils.utils as utils
 import rlalgs.algos.simplepg.core as core
-from rlalgs.algos.models import mlp_actor
 import rlalgs.utils.preprocess as preprocess
+from rlalgs.algos.models import mlp_actor, cnn_actor, print_model_summary
 from rlalgs.utils.logger import Logger, setup_logger_kwargs
 
 
-def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=2000,
+def simplepg(env_fn, model_fn, model_kwargs=dict(), lr=1e-2, epochs=50, batch_size=2000,
              seed=0, render=False, render_last=False, logger_kwargs=dict(),
              return_fn="simple", preprocess_fn=None, obs_dim=None, save_freq=10,
              overwrite_save=True):
@@ -35,7 +34,9 @@ def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=2000,
     Arguments:
     ----------
     env_fn : A function which creates a copy of OpenAI Gym environment
-    hidden_sizes : list of units in each hidden layer of policy network
+    model_fn : function for creating the policy gradient models to use
+        (see models module for more info)
+    model_kwargs : any kwargs to pass into model function
     lr : learning rate for policy network update
     epochs : number of epochs to train for
     batch_size : max batch size for epoch
@@ -65,15 +66,16 @@ def simplepg(env_fn, hidden_sizes=[32], lr=1e-2, epochs=50, batch_size=2000,
     env = env_fn()
 
     if obs_dim is None:
-        obs_dim = utils.get_dim_from_space(env.observation_space)
+        obs_dim = env.observation_space.shape
     num_actions = utils.get_dim_from_space(env.action_space)
 
     print("Initializing Replay Buffer")
     buf = core.SimpleBuffer(obs_dim, num_actions, batch_size, return_fn)
 
     print("Building network")
-    obs_ph = layers.Input(shape=(obs_dim,))
-    pi_model, pi_fn = mlp_actor(obs_ph, env.action_space, hidden_sizes)
+    pi_model, pi_fn = model_fn(env, **model_kwargs)
+
+    print_model_summary({"Actor": pi_model})
 
     print("Setup training ops")
     train_op = optimizers.Adam(learning_rate=lr)
@@ -194,6 +196,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", type=str, default='CartPole-v0')
+    parser.add_argument("-m", "--model", type=str, default="mlp")
     parser.add_argument("--hidden_sizes", type=int, nargs="*", default=[64, 64])
     parser.add_argument("--lr", type=float, default=1e-2)
     parser.add_argument("--epochs", type=int, default=50)
@@ -206,10 +209,15 @@ if __name__ == "__main__":
                         help="Return calculation to use ['simple', 'r2g']")
     args = parser.parse_args()
 
+    model_fn = mlp_actor
+    if args.model == "cnn":
+        model_fn = cnn_actor
+    model_kwargs = {"hidden_sizes": args.hidden_sizes}
+
     print(f"\nSimple Policy Gradient using {args.returns} returns")
     exp_name = f"simplepg_{args.returns}_" + args.env if args.exp_name is None else args.exp_name
     logger_kwargs = setup_logger_kwargs(exp_name, seed=args.seed)
 
-    simplepg(lambda: gym.make(args.env), hidden_sizes=args.hidden_sizes, epochs=args.epochs,
+    simplepg(lambda: gym.make(args.env), model_fn, model_kwargs=model_kwargs, epochs=args.epochs,
              lr=args.lr, batch_size=args.batch_size, seed=args.seed, render=args.render,
              render_last=args.renderlast, return_fn=args.returns, logger_kwargs=logger_kwargs)
