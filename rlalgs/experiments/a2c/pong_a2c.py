@@ -18,7 +18,7 @@ mpi.mpi_fork(cpu)
 mpi.print_msg(f"\nStarting Pong training using A2C and {cpu} processes")
 
 env = "Pong-v0"
-training_steps = int(4e7)
+training_steps = int(16e7)
 steps_per_epoch = 5000 * cpu       # > average complete episode length
 epochs = int(training_steps/steps_per_epoch)
 exp_name = f"a2c_{env}_{cpu}"
@@ -30,7 +30,7 @@ else:
     logger_kwargs = dict()
 
 params = {
-    "hidden_sizes": [100, 50, 25],
+    "hidden_sizes": [200],
     "epochs": epochs,
     "steps_per_epoch": steps_per_epoch,
     "pi_lr": 0.0007,        # the karpathy constant
