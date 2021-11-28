@@ -17,7 +17,7 @@ setup(name="rlalgs",
           'psutil',
           'matplotlib',
           'prettytable',
-          'tensorflow==2.0.0-beta0'
+          'tensorflow==2.5.2'
       ],
       description="Implementations of some RL algorithms, based off of OpenAI spinningup tutorials",
       author="Jonathon Schwartz",
