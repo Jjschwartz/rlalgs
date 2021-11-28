@@ -27,13 +27,11 @@ def plot(file_path, smooth_period):
     y = df["avg_return"]
     # eps = df["total_eps"]
     ep_lens = df["avg_ep_lens"]
-    epoch_times = df["epoch_time"]
 
     num_epochs = x.count()
     y_smooth = y.rolling(smooth_period, min_periods=1)
     y_smooth_mean = y_smooth.mean()
     y_rolling_std = y_smooth.std()
-    training_time = epoch_times.sum()
 
     print(LINE)
     print("RETURN\n")
@@ -48,7 +46,7 @@ def plot(file_path, smooth_period):
     print("\tMin value: {}".format(y.min()))
     print("\tMin epoch: {}".format(y.idxmin()))
 
-    print("\nEPISODES\n")
+    print("\n\nEPISODES\n")
     print("All stats are for epochs which are averages of episode lengths (except total episodes)\n")
     print("\tNumber of epochs: {}".format(num_epochs))
     # print("\tTotal episodes: {}".format(eps.max()))
@@ -60,11 +58,16 @@ def plot(file_path, smooth_period):
     print("\tAverage episode length: {:.3f}".format(ep_lens.mean()))
     print("\tStandard dev: {:.3f}".format(ep_lens.std()))
 
-    print("\nTRAINING TIME\n")
-    print("\tTotal training time: {:.3f} secs / {:.3f} mins / {:.3f} hours"
-          .format(training_time, training_time/60.0, training_time/(60.0 * 60)))
-    print("\tAverage epoch time: {:.3f} secs".format(epoch_times.mean()))
-    print("\tStandard dev: {:.3f} secs".format(epoch_times.std()))
+    print("\n\nTRAINING TIME\n")
+    try:
+        epoch_times = df["epoch_time"]
+        training_time = epoch_times.sum()
+        print("\tTotal training time: {:.3f} secs / {:.3f} mins / {:.3f} hours"
+              .format(training_time, training_time/60.0, training_time/(60.0 * 60)))
+        print("\tAverage epoch time: {:.3f} secs".format(epoch_times.mean()))
+        print("\tStandard dev: {:.3f} secs".format(epoch_times.std()))
+    except Exception:
+        print("No time information")
     print(LINE)
 
     plt.plot(x, y_smooth_mean)

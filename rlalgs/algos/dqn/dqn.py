@@ -4,72 +4,29 @@ Deep Q-Network implementation using tensorflow
 import gym
 import time
 import numpy as np
-import tensorflow as tf
 from gym.spaces import Discrete
+
+import tensorflow as tf
+import tensorflow.keras.optimizers as optimizers
+
 import rlalgs.utils.logger as log
 import rlalgs.utils.utils as utils
 import rlalgs.algos.dqn.core as core
 import rlalgs.utils.preprocess as preprocess
-
-# Just disables the warning, doesn't enable AVX/FMA
-import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+from rlalgs.algos.models import mlp_q_network, cnn_q_network
 
 
-class DQNReplayBuffer:
-    """
-    Replay buffer for DQN
-
-    Store experiences (o_t, a_t, r_t, o_t+1, d_t)
-    Returns a random subset of experiences for training
-
-    Stores only the c most recent experiences, where c is the capacity of the buffer
-    """
-
-    def __init__(self, obs_dim, act_dim, capacity):
-        self.obs_buf = np.zeros(utils.combined_shape(capacity, obs_dim), dtype=np.float32)
-        self.act_buf = np.zeros(utils.combined_shape(capacity, act_dim), dtype=np.float32)
-        self.rew_buf = np.zeros(capacity, dtype=np.float32)
-        self.obs_prime_buf = np.zeros(utils.combined_shape(capacity, obs_dim), dtype=np.float32)
-        self.done_buf = np.zeros(capacity, dtype=np.float32)
-        self.ptr, self.size = 0, 0
-        self.capacity = capacity
-
-    def store(self, o, a, r, o_prime, d):
-        """
-        Store an experience (o_t, a_t, r_t, o_t+1, d_t) in the buffer
-        """
-        self.obs_buf[self.ptr] = o
-        self.act_buf[self.ptr] = a
-        self.rew_buf[self.ptr] = r
-        self.obs_prime_buf[self.ptr] = o_prime
-        self.done_buf[self.ptr] = d
-        self.ptr = (self.ptr+1) % self.capacity
-        self.size = min(self.size+1, self.capacity)
-
-    def sample(self, num_samples):
-        """
-        Get a num_samples random samples from the replay buffer
-        """
-        sample_idxs = np.random.choice(self.size, num_samples)
-        return {"o": self.obs_buf[sample_idxs],
-                "a": self.act_buf[sample_idxs],
-                "r": self.rew_buf[sample_idxs],
-                "o_prime": self.obs_prime_buf[sample_idxs],
-                "d": self.done_buf[sample_idxs]}
-
-
-def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, batch_size=32,
+def dqn(env_fn, model_fn, model_kwargs, lr=1e-3, epochs=50, epoch_steps=10000, batch_size=32,
         seed=0, replay_size=100000, epsilon=0.05, gamma=0.99, polyak=0.995, start_steps=100000,
         target_update_freq=1, render=False, render_last=False, logger_kwargs=dict(), save_freq=10,
         overwrite_save=True, preprocess_fn=None, obs_dim=None):
-    """
-    Deep Q-network with experience replay
+    """Deep Q-network with experience replay
 
     Arguments:
     ----------
     env_fn : A function which creates a copy of OpenAI Gym environment
-    hidden_sizes : list of units in each hidden layer of policy network
+    model_fn : function for creating the Q-network model to use (see models module for more info)
+    model_kwargs : any kwargs to pass into model function
     lr : learning rate for policy network update
     epochs : number of epochs to train for
     epoch_steps : number of steps per epoch
@@ -96,103 +53,93 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
     assert target_update_freq <= epoch_steps, \
         "must have target_update_freq <= epoch_steps, else no learning will be done.."
 
-    tf.reset_default_graph()
-    tf.set_random_seed(seed)
+    print("Setting seeds")
+    tf.random.set_seed(seed)
     np.random.seed(seed)
 
+    print("Initializing logger")
     logger = log.Logger(**logger_kwargs)
     logger.save_config(locals())
-
-    env = env_fn()
-    if not isinstance(env.action_space, Discrete):
-        raise NotImplementedError("DQN only works for environments with Discrete action spaces")
 
     if preprocess_fn is None:
         preprocess_fn = preprocess.preprocess_obs
 
+    print("Initializing environment")
+    env = env_fn()
+    if not isinstance(env.action_space, Discrete):
+        raise NotImplementedError("DQN only works for environments with Discrete action spaces")
+
     if obs_dim is None:
-        obs_dim = utils.get_dim_from_space(env.observation_space)
-        obs_ph = utils.placeholder_from_space(env.observation_space, obs_space=True)
-        obs_prime_ph = utils.placeholder_from_space(env.observation_space, obs_space=True)
-    else:
-        obs_ph = tf.placeholder(tf.float32, shape=(None, obs_dim))
-        obs_prime_ph = tf.placeholder(tf.float32, shape=(None, obs_dim))
-
-    # need .shape for replay buffer and #actions for random action sampling
-    act_dim = env.action_space.shape
+        obs_dim = env.observation_space.shape
     num_actions = utils.get_dim_from_space(env.action_space)
-    act_ph = utils.placeholder_from_space(env.action_space)
-    rew_ph = tf.placeholder(tf.float32, shape=(None, ))
-    done_ph = tf.placeholder(tf.float32, shape=(None, ))
+    act_dim = env.action_space.shape
 
-    with tf.variable_scope("main"):
-        pi, q_pi, act_q_val, q_vals = core.q_network(obs_ph, act_ph, env.action_space, hidden_sizes)
-
-    with tf.variable_scope("target"):
-        pi_targ, q_pi_targ, _, q_vals_targ = core.q_network(obs_prime_ph, act_ph, env.action_space,
-                                                            hidden_sizes)
-
-    # Losses
-    target = rew_ph + gamma*(1-done_ph)*q_pi_targ
-    q_loss = tf.reduce_mean((tf.stop_gradient(target) - act_q_val)**2)
-
-    # Training ops
-    q_optimizer = tf.train.AdamOptimizer(learning_rate=lr)
-    q_train_op = q_optimizer.minimize(q_loss)
-
-    # update target network to match main network
-    target_init = tf.group([v_targ.assign(v_main) for v_main, v_targ
-                            in zip(core.get_vars("main"), core.get_vars("target"))])
-
-    target_update = tf.group([v_targ.assign(polyak*v_targ + (1-polyak)*v_main)
-                              for v_main, v_targ
-                              in zip(core.get_vars('main'), core.get_vars('target'))])
-
-    buf = DQNReplayBuffer(obs_dim, act_dim, replay_size)
+    print("Initializing buffer")
+    buf = core.DQNReplayBuffer(obs_dim, act_dim, replay_size)
 
     epsilon_schedule = np.linspace(1, epsilon, start_steps)
     global total_t
     total_t = 0
 
-    sess = tf.Session()
-    sess.run(tf.global_variables_initializer())
-    sess.run(target_init)
+    print("Building network")
+    # main network
+    q_model, pi_fn, q_fn = model_fn(env, **model_kwargs)
+    # target network
+    q_model_targ, pi_fn_targ, q_fn_targ = model_fn(env, **model_kwargs)
 
-    logger.setup_tf_model_saver(sess, env, {log.OBS_NAME: obs_ph}, {log.ACTS_NAME: pi})
+    print("Setting up training ops")
+    q_optimizer = optimizers.Adam(learning_rate=lr)
+
+    @tf.function
+    def q_loss(target_q_val, act_q_val, done, rew):
+        target = rew + gamma*(1-done)*target_q_val
+        return tf.reduce_mean((tf.stop_gradient(target) - act_q_val)**2)
+
+    @tf.function
+    def get_grads_and_apply(obs, obs_prime, acts, rews, dones):
+        with tf.GradientTape() as tape:
+            target_q_val, _ = q_fn_targ(acts, obs_prime)
+            _, act_q_val = q_fn(acts, obs)
+            loss = q_loss(target_q_val, act_q_val, dones, rews)
+        grads = tape.gradient(loss, q_model.trainable_variables)
+        q_optimizer.apply_gradients(zip(grads, q_model.trainable_variables))
+        return loss
+
+    print("Setting up main and target network copying")
+
+    def copy_network_weights():
+        # update target network to match main network
+        q_model_targ.set_weights(q_model.get_weights())
+
+    copy_network_weights()
+
+    def update(t):
+        batch = buf.sample(batch_size)
+        loss = get_grads_and_apply(batch['o'], batch["o_prime"], batch["a"], batch["r"], batch["d"])
+
+        if t > 0 and (target_update_freq == 1 or t % (target_update_freq-1) == 0):
+            # if t == epoch_steps-1:
+            #     logger.log_tabular("ntwk_diff", network_diff())
+            copy_network_weights()
+        return loss.numpy()
+
+    print("Setting up model saver")
+    logger.setup_tf_model_saver(q_model, env, "ql")
 
     def get_action(o, t):
         eps = epsilon if t >= start_steps else epsilon_schedule[t]
         if np.random.rand(1) < eps:
             a = np.random.choice(num_actions)
         else:
-            a = sess.run(pi, {obs_ph: o.reshape(1, -1)})
-        return a
-
-    def update(t):
-        batch = buf.sample(batch_size)
-        feed_dict = {obs_ph: batch['o'],
-                     act_ph: batch["a"],
-                     rew_ph: batch["r"],
-                     obs_prime_ph: batch["o_prime"],
-                     done_ph: batch["d"]}
-
-        batch_loss, _ = sess.run([q_loss, q_train_op], feed_dict)
-
-        if t > 0 and (target_update_freq == 1 or t % (target_update_freq-1) == 0):
-            if t == epoch_steps-1:
-                logger.log_tabular("ntwk_diff", network_diff())
-            sess.run(target_update)
-
-        return batch_loss
+            a = pi_fn(o)
+        return np.squeeze(a, axis=-1)
 
     def network_diff():
         """ Calculates difference between networks """
-        main_var = core.get_vars('main')
-        target_var = core.get_vars('target')
+        main_var = q_model.get_weights()
+        target_var = q_model_targ.get_weights()
         total_diff = 0
-        for m, t in zip(main_var, target_var):
-            m_val = m.eval(sess)
-            t_val = t.eval(sess)
+        for m_val, t_val in zip(main_var, target_var):
             diff = np.sum(np.abs(m_val - t_val))
             total_diff += diff
         return total_diff
@@ -234,7 +181,6 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
                 ep_len, ep_ret, ep_loss = 0, 0, []
 
             if t >= epoch_steps:
-                epoch_ep_lens.append(ep_len)
                 break
 
         return epoch_ep_loss, epoch_ep_rets, epoch_ep_lens
@@ -246,17 +192,18 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
         epoch_start = time.time()
         results = train_one_epoch()
         epoch_time = time.time() - epoch_start
+
         total_epoch_times += epoch_time
         total_episodes += len(results[2])
+        training_time_left = utils.training_time_left(i, epochs, epoch_time)
+
         logger.log_tabular("q_loss", np.mean(results[0]))
         logger.log_tabular("avg_return", np.mean(results[1]))
         logger.log_tabular("avg_ep_lens", np.mean(results[2]))
         logger.log_tabular("total_eps", total_episodes)
-        logger.log_tabular("total_steps", np.sum(results[2]))
         logger.log_tabular("end_epsilon", epsilon if total_t >= start_steps else epsilon_schedule[total_t])
         logger.log_tabular("epoch_time", epoch_time)
         logger.log_tabular("mem_usage", utils.get_current_mem_usage())
-        training_time_left = utils.training_time_left(i, epochs, epoch_time)
         logger.log_tabular("time_rem", training_time_left)
 
         logger.dump_tabular()
@@ -273,7 +220,7 @@ def dqn(env_fn, hidden_sizes=[64, 64], lr=1e-3, epochs=50, epoch_steps=10000, ba
         while not finished_rendering_this_epoch:
             env.render()
             o = preprocess_fn(o, env)
-            a = sess.run(pi, {obs_ph: o.reshape(1, -1)})
+            a = pi_fn(o)
             o, r, d, _ = env.step(a)
             final_ret += r
             if d:
@@ -285,10 +232,11 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", type=str, default='CartPole-v0')
+    parser.add_argument("-m", "--model", type=str, default="mlp")
     parser.add_argument("--hidden_sizes", type=int, nargs="*", default=[64, 64])
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr", type=float, default=1e-2)
     parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--epoch_steps", type=int, default=10000)
+    parser.add_argument("--epoch_steps", type=int, default=2000)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--replay_size", type=int, default=100000)
@@ -307,10 +255,15 @@ if __name__ == "__main__":
 
     preprocess_fn, obs_dim = preprocess.get_preprocess_fn(args.env)
 
+    model_fn = mlp_q_network
+    if args.model == "cnn":
+        model_fn = cnn_q_network
+    model_kwargs = {"hidden_sizes": args.hidden_sizes}
+
     print("\nDeep Q-Network")
-    dqn(lambda: gym.make(args.env), hidden_sizes=args.hidden_sizes, lr=args.lr,
-        epochs=args.epochs, epoch_steps=args.epoch_steps, batch_size=args.batch_size,
-        seed=args.seed, replay_size=args.replay_size, epsilon=args.epsilon, gamma=args.gamma,
-        polyak=args.polyak, start_steps=args.start_steps, target_update_freq=args.target_update_freq,
+    dqn(lambda: gym.make(args.env), model_fn, model_kwargs, lr=args.lr, epochs=args.epochs,
+        epoch_steps=args.epoch_steps, batch_size=args.batch_size, seed=args.seed,
+        replay_size=args.replay_size, epsilon=args.epsilon, gamma=args.gamma, polyak=args.polyak,
+        start_steps=args.start_steps, target_update_freq=args.target_update_freq,
         render=args.render, render_last=args.renderlast, logger_kwargs=logger_kwargs,
         preprocess_fn=preprocess_fn, obs_dim=obs_dim)

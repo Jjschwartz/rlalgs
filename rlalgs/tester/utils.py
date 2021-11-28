@@ -5,7 +5,6 @@ import yaml
 import os.path as osp
 
 
-# BENCHMARK_FILE = "benchmarks.yaml"
 BENCHMARK_FILE = osp.join(osp.abspath(osp.dirname(__file__)), 'benchmarks.yaml')
 
 
@@ -18,7 +17,7 @@ def load_benchmarks():
     """
     with open(BENCHMARK_FILE, "r") as stream:
         try:
-            config = yaml.load(stream)
+            config = yaml.load(stream, Loader=yaml.FullLoader)
             return config
         except yaml.YAMLError as exc:
             raise exc
